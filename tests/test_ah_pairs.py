@@ -139,6 +139,43 @@ def test_entry_grid_marks_the_threshold_in_use():
     assert not bool(table.loc[table["entry_z"] == 1.5, "current"].iloc[0])
 
 
+def test_cointegrated_pair_survives_more_windows_than_two_random_walks():
+    from ah_pairs.stability import fragility_report, stability_grid
+
+    y, x = _cointegrated_pair(n=800, phi=0.6, seed=1)
+    index = pd.bdate_range("2018-01-02", periods=len(y))
+    stable = fragility_report(stability_grid(y, x, index, lengths=(200, 400), step=200))
+    rng = np.random.default_rng(9)
+    y2 = np.cumsum(rng.normal(0, 0.01, len(y)))
+    x2 = np.cumsum(rng.normal(0, 0.01, len(y)))
+    fragile = fragility_report(stability_grid(y2, x2, index, lengths=(200, 400), step=200))
+    assert stable["reject_rate"] > fragile["reject_rate"]
+    assert stable["reject_rate"] >= 0.8
+    assert stable["n_tests"] > 0
+
+
+def test_fragility_report_ranks_highest_p_and_handles_empty_grid():
+    from ah_pairs.stability import fragility_report
+
+    grid = pd.DataFrame(
+        {
+            "start": pd.to_datetime(["2020-01-01", "2020-06-01"]),
+            "end": pd.to_datetime(["2021-01-01", "2021-06-01"]),
+            "length": [200, 400],
+            "pvalue": [0.01, 0.80],
+            "reject_5": [True, False],
+        }
+    )
+    report = fragility_report(grid)
+    assert report["n_tests"] == 2
+    assert report["reject_rate"] == 0.5
+    assert report["fragility"] == 0.5
+    assert report["worst"].iloc[0]["pvalue"] == 0.8
+    empty = fragility_report(pd.DataFrame(columns=["pvalue", "length", "reject_5"]))
+    assert empty["n_tests"] == 0
+    assert np.isnan(empty["fragility"])
+
+
 def test_hedge_ratio_ignores_the_future():
     y, x = _cointegrated_pair(n=600, seed=3)
     y2 = y.copy()

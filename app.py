@@ -22,8 +22,10 @@ from ah_pairs.plots import (
     premium_figure,
     prices_figure,
     rolling_p_figure,
+    stability_heatmap,
     static_resid_figure,
 )
+from ah_pairs.stability import fragility_report, slice_checks, stability_grid
 from ah_pairs.universe import LIQUID_A_CODES, liquid_subset, load_universe, refresh_universe
 
 st.set_page_config(
@@ -287,7 +289,7 @@ with title_col:
     st.markdown(
         """
 <div class="brand">
-  <p class="kicker">V0.6 · EUGENE FINANCE</p>
+  <p class="kicker">V0.7 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H 股协整配对交易研究看板</h1>
   <p class="subtitle">Interactive Cointegration &amp; Dynamic Pairs Trading Lab · 仅供学习与研究，不构成投资建议</p>
 </div>
@@ -481,7 +483,7 @@ st.markdown(
     f"""
 <div class="mast">
   <div>
-    <p class="kicker">V0.6 · 这一对</p>
+    <p class="kicker">V0.7 · 这一对</p>
     <p class="pair-name">{picked["name"]}</p>
     <p class="meta">{picked.a_code} · {picked.h_code} · 最近交易日 {frame.index.max().date()} · {frame.index.min().date()} — {frame.index.max().date()} · {len(frame)} 个同时开市日。A、H 节假日不同，只保留两边都开市的日期。</p>
   </div>
@@ -611,8 +613,8 @@ def _render_quick_compare(button_key: str) -> None:
     st.dataframe(view[columns], hide_index=True, use_container_width=True)
 
 
-tab_easy, tab_px, tab_coint, tab_bt, tab_flow, tab_scan, tab_note = st.tabs(
-    ["先看懂", "价差与信号", "协整诊断", "回测", "北向资金", "一组对照", "方法说明"]
+tab_easy, tab_px, tab_coint, tab_stable, tab_bt, tab_flow, tab_scan, tab_note = st.tabs(
+    ["先看懂", "价差与信号", "协整诊断", "稳定性", "回测", "北向资金", "一组对照", "方法说明"]
 )
 
 with tab_easy:
@@ -676,7 +678,7 @@ with tab_easy:
 1. 先留在这一页，看懂 {company} 的溢价和 p 值。
 2. 打开「价差与信号」。浅色带是平常波动范围，三角是开仓，叉是平仓。
 3. 打开「回测」，看扣掉费用之后的净值。旁边还有只买 A、只买 H、两边各买一半的对照。
-4. 左侧可以换成工行、招行、石油。换完后，页顶会告诉你 p 值变大了还是变小了。
+4. 左侧可以换成工行、招行、石油。换完后，页顶会告诉你 p 值变大了还是变小了。想看这个关系换窗口、换子样本之后还在不在，打开「稳定性」。
         """
     )
     st.markdown(
@@ -796,6 +798,79 @@ with tab_coint:
     else:
         st.caption("评估区间不足 252 个交易日，没有画滚动协整 p 值。")
     st.plotly_chart(static_resid_figure(frame), use_container_width=True)
+
+with tab_stable:
+    st.markdown(
+        "不只做一次协整检验。系统会换窗口长度、换终点，再在全区间上切子样本、去掉极端日，"
+        "看 5% 水平上还有多少情形能拒绝“没有协整”。"
+    )
+    stability_key = f"{picked.a_code}|{start_day}|{end_day}"
+    if len(frame) < 200:
+        st.info("这段评估区间太短，稳定性地图至少需要大约 200 个同时开市日。")
+    elif st.button("计算稳定性地图", key="run_stability"):
+        with st.spinner("正在换窗口重算协整，大约需要几秒到十几秒…"):
+            grid = stability_grid(frame["log_a"], frame["log_h"], frame.index)
+            st.session_state["stability"] = {
+                "key": stability_key,
+                "grid": grid,
+                "report": fragility_report(grid),
+                "checks": slice_checks(frame),
+            }
+    saved_stability = st.session_state.get("stability")
+    if isinstance(saved_stability, dict) and saved_stability.get("key") != stability_key:
+        st.caption("股票或日期变了，需要重新计算。")
+        saved_stability = None
+    if isinstance(saved_stability, dict):
+        report = saved_stability["report"]
+        rate = report["reject_rate"]
+        fragility = report["fragility"]
+        if not np.isfinite(fragility):
+            words = "算不出来"
+        elif fragility < 0.25:
+            words = "比较稳"
+        elif fragility < 0.6:
+            words = "不太稳"
+        else:
+            words = "很脆弱"
+        _kpis(
+            [
+                ("成立比例", _pct(rate), "pos" if np.isfinite(rate) and rate >= 0.5 else "neg"),
+                ("脆弱程度", _pct(fragility), "neg" if np.isfinite(fragility) and fragility >= 0.5 else ""),
+                ("判断", words, ""),
+                ("检验次数", f"{report['n_tests']}", ""),
+            ],
+            columns=4,
+        )
+        worst = report["worst"]
+        if isinstance(worst, pd.DataFrame) and not worst.empty:
+            top = worst.iloc[0]
+            st.markdown(
+                f"最危险的窗口是 **{pd.Timestamp(top['start']).date()} 至 {pd.Timestamp(top['end']).date()}**，"
+                f"长度 {int(top['length'])} 个交易日，p 值 {_pval(top['pvalue'])}。"
+            )
+        st.plotly_chart(stability_heatmap(saved_stability["grid"]), use_container_width=True)
+        st.caption(
+            "颜色越偏深蓝，p 值越小。0.05 以下才算在这个窗口里拒绝了无协整。"
+            "这里为了重复计算，每个窗口的滞后都固定为 1 阶，和诊断页里用 AIC 选滞后的那一次检验不完全相同。"
+        )
+        if isinstance(worst, pd.DataFrame) and not worst.empty:
+            show_worst = worst.copy()
+            show_worst["开始"] = pd.to_datetime(show_worst["start"]).dt.date
+            show_worst["结束"] = pd.to_datetime(show_worst["end"]).dt.date
+            show_worst["p 值"] = show_worst["pvalue"].map(_pval)
+            st.markdown("**p 值最高的窗口**")
+            st.dataframe(
+                show_worst[["开始", "结束", "length", "p 值"]].rename(columns={"length": "长度"}),
+                hide_index=True,
+                use_container_width=True,
+            )
+        checks = saved_stability["checks"].copy()
+        checks["p 值"] = checks["pvalue"].map(_pval)
+        checks["5% 结论"] = checks["reject_5"].map({True: "拒绝无协整", False: "不拒绝"})
+        st.markdown("**子样本和极端日**")
+        st.caption("下面每一行的滞后也固定为 1 阶，所以「全区间」的 p 值可以和页顶那次 AIC 选滞后的 EG p 值不一样。")
+        st.dataframe(checks[["情形", "天数", "p 值", "5% 结论"]], hide_index=True, use_container_width=True)
+        st.caption("这些检验共用同一段价格。成立比例高，只说明关系对换窗口不那么敏感，不代表样本外一定还在。")
 
 with tab_bt:
     _kpis(
@@ -1004,6 +1079,8 @@ with tab_note:
 
 **成本和日历。** 佣金、法定印花税、融券费、汇率与成交滑点都在侧栏里。印花税按日期分档。A、H 节假日不一致的日期整行删掉，不用前值填股价。
 
+**稳定性。** 「稳定性」里换窗口长度、换终点、切半段、去掉极端日，看 5% 上拒绝无协整的比例。脆弱程度 = 1 − 成立比例。每个窗口的 Engle–Granger 用了该窗口里的全部价格，滞后固定为 1 阶。这些检验共用同一段价格，成立比例高只说明关系对换样本不那么敏感，不是样本外证据。
+
 **前视和多重比较。** 全样本 β、EG 和 Johansen 用了评估区间里的全部价格，只能当描述。交易信号本身不用未来价格。开仓阈值敏感性、以及「一组对照」里按 p 值排序，都是同一段样本上的多次试验，最小的 p 值或最好的夏普会被挑得偏乐观。
 
 **不要读成什么。** 样本内协整不保证以后还在。A/H 不能转换，溢价可以在高位停很多年。做空 A 股取决于能不能借到券。腾讯没有 A 股，不在这个股票池里。
@@ -1015,6 +1092,6 @@ with tab_note:
     )
 
 st.markdown(
-    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.6 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
+    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.7 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
     unsafe_allow_html=True,
 )

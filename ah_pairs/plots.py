@@ -467,6 +467,32 @@ def northbound_figure(frame: pd.DataFrame) -> go.Figure:
     return _layout(fig, "价差变化与北向资金净买入")
 
 
+def stability_heatmap(grid: pd.DataFrame) -> go.Figure:
+    """窗口长度 × 窗口终点的协整 p 值。颜色越深越接近拒绝无协整。"""
+    if grid.empty:
+        return _layout(go.Figure(), "稳定性地图")
+    pivot = grid.pivot_table(index="length", columns="end", values="pvalue", aggfunc="mean")
+    pivot = pivot.sort_index(ascending=False)
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=pivot.to_numpy(),
+            x=[pd.Timestamp(value).strftime("%Y-%m") for value in pivot.columns],
+            y=[f"{int(length)} 日" for length in pivot.index],
+            colorscale=[
+                [0.0, "#1f4e79"],
+                [0.05, "#8eacc4"],
+                [0.2, "#e07a2f"],
+                [1.0, "#9b3a3a"],
+            ],
+            zmin=0,
+            zmax=1,
+            colorbar=dict(title="p 值"),
+            hovertemplate="终点 %{x}<br>窗口 %{y}<br>p=%{z:.3f}<extra></extra>",
+        )
+    )
+    return _layout(fig, "协整 p 值：窗口长度 × 终点", height=420)
+
+
 def rolling_p_figure(pvalues: pd.Series) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(
