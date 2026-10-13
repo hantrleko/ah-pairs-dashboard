@@ -1,0 +1,181 @@
+"""合成价格上的协整、前视和回测检验。不访问网络。"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from ah_pairs.backtest import StrategyParams, run_backtest
+from ah_pairs.cointegration import engle_granger, ou_half_life
+from ah_pairs.costs import CostParams, a_share_stamp, h_share_stamp, leg_turnover_cost
+from ah_pairs.hedge import kalman_hedge, rolling_ols
+from ah_pairs.universe import a_to_yahoo, h_to_yahoo, load_universe
+
+
+def _zero_costs() -> CostParams:
+    return CostParams(
+        a_commission=0.0,
+        h_commission=0.0,
+        a_borrow_annual=0.0,
+        h_borrow_annual=0.0,
+        use_statutory_stamp=False,
+        a_stamp_sell=0.0,
+        h_stamp=0.0,
+        slippage=0.0,
+    )
+
+
+def _params(**kwargs) -> StrategyParams:
+    base = dict(
+        hedge_window=40,
+        z_window=20,
+        entry_z=2.0,
+        exit_z=0.5,
+        stop_z=0.0,
+        allow_short_a=True,
+        fill="next_close",
+        beta_band=0.10,
+        costs=_zero_costs(),
+    )
+    base.update(kwargs)
+    return StrategyParams(**base)
+
+
+def _book(z, beta, ret_a=None, ret_h=None) -> pd.DataFrame:
+    n = len(z)
+    index = pd.bdate_range("2023-01-02", periods=n)
+    if ret_a is None:
+        ret_a = np.zeros(n)
+    if ret_h is None:
+        ret_h = np.zeros(n)
+    return pd.DataFrame(
+        {"z": z, "beta": beta, "ret_a": ret_a, "ret_h": ret_h},
+        index=index,
+    )
+
+
+def _cointegrated_pair(n=1200, phi=0.95, beta=1.1, seed=7):
+    rng = np.random.default_rng(seed)
+    x = np.cumsum(rng.normal(0, 0.01, n))
+    eps = np.zeros(n)
+    for t in range(1, n):
+        eps[t] = phi * eps[t - 1] + rng.normal(0, 0.005)
+    y = 0.2 + beta * x + eps
+    return y, x
+
+
+def test_yahoo_codes_and_universe():
+    assert a_to_yahoo("601318") == "601318.SS"
+    assert a_to_yahoo("688009") == "688009.SS"
+    assert a_to_yahoo("002594") == "002594.SZ"
+    assert a_to_yahoo("000333") == "000333.SZ"
+    assert h_to_yahoo("02318") == "2318.HK"
+    assert h_to_yahoo("00857") == "0857.HK"
+    assert h_to_yahoo("00300") == "0300.HK"
+    universe = load_universe()
+    ping_an = universe.loc[universe["a_code"] == "601318"].iloc[0]
+    assert ping_an["h_code"] == "02318"
+    assert ping_an["h_yahoo"] == "2318.HK"
+
+
+def test_stamp_schedule():
+    params = CostParams()
+    assert a_share_stamp("2023-08-27", params) == (0.0, 0.001)
+    assert a_share_stamp("2023-08-28", params) == (0.0, 0.0005)
+    assert a_share_stamp("2008-09-18", params) == (0.001, 0.001)
+    assert h_share_stamp("2021-07-30", params) == pytest.approx(0.001)
+    assert h_share_stamp("2021-08-01", params) == pytest.approx(0.0013)
+    assert h_share_stamp("2023-11-17", params) == pytest.approx(0.001)
+
+
+def test_leg_cost_splits_long_and_short():
+    # 平掉 0.5 的多头再开 0.2 的空头：两笔都是卖出。
+    cost = leg_turnover_cost(0.5, -0.2, commission=0.01, stamp_buy=0.0, stamp_sell=0.02)
+    assert cost == pytest.approx(0.5 * 0.03 + 0.2 * 0.03)
+
+
+def test_half_life_and_engle_granger_recover_the_process():
+    y, x = _cointegrated_pair()
+    hl = ou_half_life(pd.Series(y - 0.2 - 1.1 * x))
+    assert hl["mean_reverting"]
+    assert 8 < hl["half_life"] < 25
+    eg = engle_granger(y, x)
+    assert eg["pvalue"] < 0.05
+    assert eg["beta"] == pytest.approx(1.1, abs=0.05)
+    assert eg["reject_5"]
+
+
+def test_hedge_ratio_ignores_the_future():
+    y, x = _cointegrated_pair(n=600, seed=3)
+    y2 = y.copy()
+    x2 = x.copy()
+    y2[400:] += 3
+    x2[400:] -= 2
+    _a1, b1 = rolling_ols(y, x, 80)
+    _a2, b2 = rolling_ols(y2, x2, 80)
+    np.testing.assert_allclose(b1[:401], b2[:401], equal_nan=True)
+    k1, kb1 = kalman_hedge(y, x, delta=1e-4, init_window=80)
+    k2, kb2 = kalman_hedge(y2, x2, delta=1e-4, init_window=80)
+    np.testing.assert_allclose(kb1[:401], kb2[:401], equal_nan=True)
+    assert np.isfinite(b1[100])
+    assert np.isnan(b1[79])
+
+
+def test_next_close_does_not_earn_the_signal_day_and_respects_t_plus_one():
+    z = np.array([0.0, 0.0, 3.0, 0.0, 0.0, 0.0])
+    beta = np.ones(len(z))
+    ret_a = np.zeros(len(z))
+    ret_h = np.zeros(len(z))
+    ret_a[3] = 0.02  # 信号次日，仓位还没成交，不该赚到
+    ret_a[4] = 0.01  # 成交后的第一天
+    frame, trades, _stats = run_backtest(_book(z, beta, ret_a, ret_h), _params())
+    assert frame["position"].tolist() == [0, 0, 0, -1, 0, 0]
+    # 空价差、beta=1：w_a=-0.5。只在持仓日赚到 A 股收益。
+    assert frame["ret_strat"].iloc[3] == pytest.approx(0.0)
+    assert frame["ret_strat"].iloc[4] == pytest.approx(-0.5 * 0.01)
+    assert len(trades) == 1
+    assert trades.iloc[0]["holding_days"] == 1
+    assert trades.iloc[0]["entry_z"] == pytest.approx(3.0)
+
+
+def test_disallowing_a_share_short_drops_the_rich_a_share_signal():
+    z = np.array([0.0, 3.0, 3.0, -3.0, -3.0, -3.0])
+    beta = np.ones(len(z))
+    frame, _trades, _stats = run_backtest(
+        _book(z, beta), _params(allow_short_a=False, fill="same_close")
+    )
+    assert (frame["w_a"] < -1e-12).sum() == 0
+    assert (frame["position"] == 1).any()
+    assert (frame["position"] == -1).sum() == 0
+
+
+def test_costs_reduce_equity_and_beta_band_does_not_churn():
+    z = np.full(8, -3.0)
+    beta = np.array([1.0, 1.0, 1.01, 1.01, 1.01, 1.50, 1.50, 1.50])
+    free, _t, free_stats = run_backtest(
+        _book(z, beta), _params(fill="same_close", beta_band=0.10)
+    )
+    costly_params = _params(
+        fill="same_close",
+        beta_band=0.10,
+        costs=CostParams(
+            a_commission=0.01,
+            h_commission=0.01,
+            a_borrow_annual=0.0,
+            h_borrow_annual=0.0,
+            use_statutory_stamp=False,
+            a_stamp_sell=0.01,
+            h_stamp=0.01,
+            slippage=0.0,
+        ),
+    )
+    costly, _t2, costly_stats = run_backtest(_book(z, beta), costly_params)
+    assert costly["equity"].iloc[-1] < free["equity"].iloc[-1]
+    assert costly_stats["total_cost"] > 0
+    # 前五天 beta 只从 1 漂到 1.01，不应该改权重。第 6 天 1.50 才再平衡。
+    assert free["w_a"].iloc[0] == pytest.approx(0.5)
+    assert free["w_a"].iloc[4] == pytest.approx(0.5)
+    assert free["w_a"].iloc[5] == pytest.approx(1 / 2.5)
+    assert free_stats["n_trades"] == 0  # 到样本结束还没平仓
+    assert free_stats["n_open"] == 1
