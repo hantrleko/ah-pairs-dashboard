@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from ah_pairs.analysis import analyze_frame, pick_lowest_p, screen_one, warmup_start
-from ah_pairs.backtest import StrategyParams, contrast_costs, later_window_performance
+from ah_pairs.analysis import analyze_frame, pick_best_sharpe, pick_lowest_p, screen_one, walk_forward, warmup_start
+from ah_pairs.backtest import StrategyParams, contrast_costs, current_state, later_window_performance
 from ah_pairs.costs import CostParams
 from ah_pairs.data import load_pair
 from ah_pairs.export import equity_png, metrics_latex, metrics_table, spread_png
@@ -27,7 +27,7 @@ from ah_pairs.plots import (
     stability_heatmap,
     static_resid_figure,
 )
-from ah_pairs.stability import fragility_report, length_summary, slice_checks, stability_grid
+from ah_pairs.stability import eg_pvalue, fragility_report, length_summary, slice_checks, stability_grid
 from ah_pairs.universe import LIQUID_A_CODES, liquid_subset, load_universe, refresh_universe
 
 st.set_page_config(
@@ -321,7 +321,7 @@ with title_col:
     st.markdown(
         """
 <div class="brand">
-  <p class="kicker">V0.9 · EUGENE FINANCE</p>
+  <p class="kicker">V1.0 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H 股协整配对交易研究看板</h1>
   <p class="subtitle">Interactive Cointegration &amp; Dynamic Pairs Trading Lab · 仅供学习与研究，不构成投资建议</p>
 </div>
@@ -538,7 +538,7 @@ st.markdown(
     f"""
 <div class="mast">
   <div>
-    <p class="kicker">V0.9 · 这一对</p>
+    <p class="kicker">V1.0 · 这一对</p>
     <p class="pair-name">{picked["name"]}</p>
     <p class="meta">{picked.a_code} · {picked.h_code} · {len(frame)} 个同时开市日。停牌或只有一边开市的日期已去掉，不在图上。</p>
   </div>
@@ -631,10 +631,25 @@ with ctrl_right:
         help="关掉后，价差图不再画三角和叉。持仓的底色还在。",
     )
 st.caption("图上可以拖出一块区域放大。切换区间或关掉标记，不会改上面的结论。")
+focus = st.session_state.get("chart_focus")
+if isinstance(focus, dict) and focus.get("start") and focus.get("end"):
+    st.caption(f"图表目前锁定在稳定性窗口 {focus['start']} 至 {focus['end']}，不是上面的近 1 年 / 近 3 年 / 全期间。")
+    if st.button("恢复图表区间", key="clear_chart_focus"):
+        st.session_state["chart_focus"] = None
+        st.rerun()
 
 
 def _span_frame(data: pd.DataFrame, span: str) -> pd.DataFrame:
-    if data is None or len(data) == 0 or span == "全期间":
+    if data is None or len(data) == 0:
+        return data
+    focus = st.session_state.get("chart_focus")
+    if isinstance(focus, dict) and focus.get("start") and focus.get("end"):
+        start = pd.Timestamp(focus["start"])
+        end = pd.Timestamp(focus["end"])
+        sliced = data.loc[(data.index >= start) & (data.index <= end)]
+        if len(sliced):
+            return sliced
+    if span == "全期间":
         return data
     days = 365 if span == "近 1 年" else 365 * 3
     end = data.index.max()
@@ -680,8 +695,8 @@ def _compare_key() -> str:
 
 
 def _render_quick_compare(button_key: str) -> None:
-    st.markdown("**平安、工行、招行、石油，谁更接近协整**")
-    st.caption("用左侧现在的日期和参数现算。p 值更小，只表示价差更像会回到附近。")
+    st.markdown("**平安、工行、招行、石油**")
+    st.caption("用左侧现在的日期和参数现算，已经扣了侧栏里的成本。p 值更小只表示更接近协整，不表示扣费后更好。")
     if st.button("按当前区间比较这四只", key=button_key):
         rows = []
         progress = st.progress(0.0, text="准备比较")
@@ -725,23 +740,37 @@ def _render_quick_compare(button_key: str) -> None:
         st.caption("日期或参数已经变了，需要再比一次。")
         return
     table = saved["table"]
-    best = pick_lowest_p(table)
-    if best is not None:
+    _rank_lines(table)
+    columns = [col for col in ["简称", "公司", "A", "H", "eg_pvalue", "total_return", "max_drawdown", "n_trades", "total_cost", "sharpe", "说明"] if col in table.columns]
+    st.dataframe(
+        table[columns],
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "eg_pvalue": st.column_config.NumberColumn("EG p 值", format="%.3f"),
+            "total_return": st.column_config.NumberColumn("净收益", format="%.2%"),
+            "max_drawdown": st.column_config.NumberColumn("最大回撤", format="%.2%"),
+            "n_trades": st.column_config.NumberColumn("交易次数", format="%d"),
+            "total_cost": st.column_config.NumberColumn("成本合计", format="%.2%"),
+            "sharpe": st.column_config.NumberColumn("夏普", format="%.2f"),
+        },
+    )
+
+
+def _rank_lines(table: pd.DataFrame) -> None:
+    best_p = pick_lowest_p(table)
+    best_s = pick_best_sharpe(table)
+    if best_p is not None:
         st.markdown(
-            f"这四只里，**{best['公司']}** 的 EG p 值最小，是 {_pval(best['eg_pvalue'])}。"
-            "这只说明它更接近协整，不说明扣完费用后一定赚钱。"
+            f"协整诊断较好：**{best_p['公司']}**，EG p = {_pval(best_p['eg_pvalue'])}。"
         )
-    view = table.copy()
-    if "eg_pvalue" in view.columns:
-        view["EG p 值"] = view["eg_pvalue"].map(_pval)
-    if "half_life" in view.columns:
-        view["半衰期"] = view["half_life"].map(lambda v: _num(v, 1))
-    if "sharpe" in view.columns:
-        view["夏普"] = view["sharpe"].map(lambda v: _num(v, 2))
-    if "total_return" not in view.columns and "说明" in view.columns:
-        pass
-    columns = [col for col in ["简称", "公司", "A", "H", "EG p 值", "半衰期", "夏普", "说明"] if col in view.columns]
-    st.dataframe(view[columns], hide_index=True, use_container_width=True)
+    if best_s is not None:
+        st.markdown(
+            f"扣费后回测表现较好：**{best_s['公司']}**，夏普 {_num(best_s['sharpe'], 2)}，"
+            f"净收益 {_pct(best_s.get('total_return', np.nan))}。"
+        )
+    if best_p is not None and best_s is not None and best_p["公司"] != best_s["公司"]:
+        st.caption("这两类排名不是同一只。p 值低不代表扣完费用后的策略更好。")
 
 
 tab_sum, tab_coint, tab_px, tab_stable, tab_bt, tab_note, tab_flow, tab_scan = st.tabs(
@@ -846,6 +875,30 @@ with tab_sum:
     _render_quick_compare("compare_from_easy")
 
 with tab_px:
+    state = current_state(frame, result["trades"], params.fill)
+    held_name = {0: "空仓", 1: "多头价差（买 A 卖 H）", -1: "空头价差（卖 A 买 H）"}.get(state["position"], "空仓")
+    signal_name = {0: "空仓", 1: "多头价差（买 A 卖 H）", -1: "空头价差（卖 A 买 H）"}.get(state["signal"], "空仓")
+    if params.fill != "next_close":
+        pending_text = "未按 T+1：信号已按当日收盘计入持仓。"
+    elif state["pending"]:
+        pending_text = f"有待成交：收盘信号是{signal_name}，持仓仍是{held_name}。下一同时开市日收盘才成交。"
+    else:
+        pending_text = "没有待成交动作。收盘信号和当前持仓一致。"
+    entry_text = "—" if state["last_entry"] is None else str(state["last_entry"].date())
+    exit_text = "—" if state["last_exit"] is None else str(state["last_exit"].date())
+    _kpis(
+        [
+            ("最新 z", _num(state["z"], 2), ""),
+            ("当前持仓", held_name, ""),
+            ("最近开仓", entry_text, ""),
+            ("最近平仓", exit_text, ""),
+        ],
+        columns=4,
+    )
+    st.caption(
+        f"截止 {pd.Timestamp(state['asof']).date()}，与上面的回测同一套参数。"
+        f"{pending_text} 图表区间切换不改变这张卡。"
+    )
     _show_chart(
         core_signal_figure(
             view,
@@ -996,6 +1049,17 @@ with tab_stable:
     used = "卡尔曼滤波" if params.hedge == "kalman" else "滚动 OLS"
     st.caption(f"两条 β 都只用当天以前的价格。现在仓位用的是{used}，图例里标了「交易用」。")
     _show_chart(static_resid_figure(view), "chart_resid_stable")
+    st.markdown("**两种检验口径**")
+    spec_key = f"{picked.a_code}|{start_day}|{end_day}"
+    if st.session_state.get("spec_key") != spec_key:
+        st.session_state["spec_lag1"] = eg_pvalue(frame["log_a"], frame["log_h"])
+        st.session_state["spec_key"] = spec_key
+    lag1_full = st.session_state.get("spec_lag1", np.nan)
+    st.markdown(
+        f"摘要里的 EG p = **{_pval(eg['pvalue'])}**，滞后由 AIC 选择。"
+        f"稳定性地图里同一次全区间检验的 p = **{_pval(lag1_full)}**，滞后固定为 1 阶。"
+        "这是两种设定，不是同一条检验算了两次。不能把 0.05 从一种口径直接套到另一种上。"
+    )
     st.markdown("**扰动**")
     st.markdown(
         "不只做一次协整检验。系统会换窗口长度、换终点，再在全区间上切子样本、去掉极端日，"
@@ -1065,13 +1129,49 @@ with tab_stable:
                 show_worst[["开始", "结束", "length", "p 值"]].rename(columns={"length": "长度"}),
                 hide_index=True,
                 use_container_width=True,
+                column_config={"p 值": st.column_config.TextColumn("p 值")},
             )
+            labels = [
+                f"{pd.Timestamp(row.start).date()} 至 {pd.Timestamp(row.end).date()} · {int(row.length)} 日 · p {_pval(row.pvalue)}"
+                for row in worst.itertuples(index=False)
+            ]
+            picked_window = st.selectbox("失稳窗口", labels, key="unstable_window")
+            if st.button("把信号图切到这个窗口", key="focus_unstable"):
+                chosen = worst.iloc[labels.index(picked_window)]
+                st.session_state["chart_focus"] = {
+                    "start": str(pd.Timestamp(chosen["start"]).date()),
+                    "end": str(pd.Timestamp(chosen["end"]).date()),
+                }
+                st.rerun()
+            st.caption("切过去之后，打开「信号」看这一段价差。页顶可以恢复成近 1 年、近 3 年或全期间。")
         checks = saved_stability["checks"].copy()
-        checks["p 值"] = checks["pvalue"].map(_pval)
-        checks["5% 结论"] = checks["reject_5"].map({True: "拒绝无协整", False: "不拒绝"})
+        n_pass = int(checks["reject_5"].fillna(False).sum())
+        n_fail = int(len(checks) - n_pass)
+        aic_pass = int(checks["reject_5_aic"].fillna(False).sum()) if "reject_5_aic" in checks.columns else None
+        st.markdown(
+            f"固定 1 阶的窗口地图：{report['n_tests']} 次里有 {int(round(report['reject_rate'] * report['n_tests'])) if np.isfinite(report['reject_rate']) else 0} 次在 5% 上通过。"
+            f"下面的子样本和极端日，固定 1 阶通过 {n_pass} 项、未通过 {n_fail} 项。"
+            + (f"同一批情形用 AIC 选滞后，通过 {aic_pass} 项。" if aic_pass is not None else "")
+        )
+        weak = checks.sort_values("pvalue", ascending=False)
+        if len(weak):
+            top_weak = weak.iloc[0]
+            st.caption(
+                f"这张子样本表里，固定 1 阶 p 值最高的是「{top_weak['情形']}」（p = {_pval(top_weak['pvalue'])}）。"
+                "后半段或去掉最近一年若明显高于前半段，失稳主要在近期。"
+            )
+        show_checks = checks.copy()
+        show_checks["滞后 1 阶 p"] = show_checks["pvalue"].map(_pval)
+        show_checks["1 阶结论"] = show_checks["reject_5"].map({True: "通过", False: "未通过"})
+        if "pvalue_aic" in show_checks.columns:
+            show_checks["AIC p"] = show_checks["pvalue_aic"].map(_pval)
+            show_checks["AIC 结论"] = show_checks["reject_5_aic"].map({True: "通过", False: "未通过"})
+            check_cols = ["情形", "天数", "滞后 1 阶 p", "1 阶结论", "AIC p", "AIC 结论"]
+        else:
+            check_cols = ["情形", "天数", "滞后 1 阶 p", "1 阶结论"]
         st.markdown("**子样本和极端日**")
-        st.caption("下面每一行的滞后也固定为 1 阶，所以「全区间」的 p 值可以和页顶那次 AIC 选滞后的 EG p 值不一样。")
-        st.dataframe(checks[["情形", "天数", "p 值", "5% 结论"]], hide_index=True, use_container_width=True)
+        st.caption("「滞后 1 阶」和地图相同。「AIC」和摘要页的 EG 检验相同。通过指 5% 上拒绝无协整。")
+        st.dataframe(show_checks[check_cols], hide_index=True, use_container_width=True)
         st.caption("这些检验共用同一段价格。成立比例高，只说明关系对换窗口不那么敏感，不代表样本外一定还在。")
 
 with tab_bt:
@@ -1147,6 +1247,49 @@ with tab_bt:
             f"净收益 {_pct(later['total_return'])}，年化 {_pct(later['cagr'])}，这段里开仓 {later['n_trades']} 次。"
             "这不是严格的样本外或 walk-forward 寻优。"
         )
+    wf_key = "|".join(
+        [
+            picked.a_code,
+            str(start_day),
+            str(end_day),
+            params.hedge,
+            f"{params.entry_z:.2f}",
+            f"{params.exit_z:.2f}",
+            f"{params.stop_z:.2f}",
+            params.fill,
+            str(params.hedge_window),
+            str(params.z_window),
+            str(include_costs),
+            f"{params.costs.slippage:.6f}",
+        ]
+    )
+    if st.session_state.get("wf_key") != wf_key:
+        with st.spinner("按时间顺序做 walk-forward，训练期选参数，验证期不再改…"):
+            st.session_state["wf"] = walk_forward(frame, params)
+            st.session_state["wf_key"] = wf_key
+    wf = st.session_state.get("wf") or {}
+    st.markdown("**Walk-forward**")
+    if not wf.get("ok"):
+        st.info(wf.get("message") or "这段样本做不了 walk-forward。")
+    else:
+        st.markdown(
+            f"训练区间到 **{pd.Timestamp(wf['train_end']).date()}**，只在这里按夏普挑选开仓阈值，选中的是 **{wf['chosen_entry']:.1f}**。"
+            f"验证区间 **{pd.Timestamp(wf['valid_start']).date()} 至 {pd.Timestamp(wf['valid_end']).date()}** 锁定这个阈值，从空仓重新开始，没有再调参。"
+        )
+        st.dataframe(
+            wf["table"],
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "开仓 |z|": st.column_config.NumberColumn(format="%.1f"),
+                "净收益": st.column_config.NumberColumn(format="%.2%"),
+                "夏普": st.column_config.NumberColumn(format="%.2f"),
+                "最大回撤": st.column_config.NumberColumn(format="%.2%"),
+                "交易次数": st.column_config.NumberColumn(format="%d"),
+                "成本合计": st.column_config.NumberColumn(format="%.2%"),
+            },
+        )
+        st.caption("成本合计是每日费用占净值比例的加总。全样本那一行只是把锁定后的阈值再放到整段历史上，验证期本身没有参与挑选。")
     st.markdown("**成本敏感度**")
     st.dataframe(
         contrast_costs(frame, params),
@@ -1211,7 +1354,7 @@ with tab_bt:
                 "收益": st.column_config.NumberColumn(format="%.2%"),
             },
         )
-    trade_csv = show.to_csv(index=False).encode("utf-8-sig") if not trades.empty else "开仓,平仓\n".encode("utf-8-sig")
+    trade_csv = trades.to_csv(index=False).encode("utf-8-sig") if not trades.empty else "entry_date,exit_date\n".encode("utf-8-sig")
     export = frame.reset_index()
     summary = metrics_table(result, picked["name"], picked.a_code, picked.h_code)
     latex = metrics_latex(summary)
@@ -1237,7 +1380,7 @@ with tab_bt:
         mime="text/csv",
     )
     st.download_button(
-        "交易明细 CSV",
+        "交易明细 CSV（完整精度）",
         trade_csv,
         file_name=f"{picked.a_code}_trades.csv",
         mime="text/csv",
@@ -1346,10 +1489,14 @@ with tab_scan:
                 "half_life": st.column_config.NumberColumn("半衰期", format="%.1f"),
                 "sharpe": st.column_config.NumberColumn("夏普", format="%.2f"),
                 "cagr": st.column_config.NumberColumn("年化", format="%.2%"),
+                "total_return": st.column_config.NumberColumn("净收益", format="%.2%"),
                 "max_drawdown": st.column_config.NumberColumn("最大回撤", format="%.2%"),
+                "n_trades": st.column_config.NumberColumn("交易次数", format="%d"),
+                "total_cost": st.column_config.NumberColumn("成本合计", format="%.2%"),
                 "latest_premium": st.column_config.NumberColumn("最新溢价", format="%.1%"),
             },
         )
+        _rank_lines(pd.DataFrame(st.session_state["scan_rows"]))
 
 with tab_note:
     st.markdown(
@@ -1368,9 +1515,13 @@ with tab_note:
 
 **界面语言。** 页面、术语和导出表使用简体中文，避免同一指标出现两套叫法。
 
-**稳定性。** 「稳定性」里换窗口长度、换终点、切半段、去掉极端日，看 5% 上拒绝无协整的比例。脆弱程度 = 1 − 成立比例。每个窗口的 Engle–Granger 用了该窗口里的全部价格，滞后固定为 1 阶，所以可以和页顶那次 AIC 选滞后的 p 值不一样。这些检验共用同一段价格，成立比例高只说明关系对换样本不那么敏感，不是样本外证据。
+**稳定性。** 地图里每次检验的滞后固定为 1 阶。摘要页的 EG p 值用 AIC 选滞后。子样本表把两种口径并排列出。通过指 5% 上拒绝无协整。这些检验共用同一段价格，不是样本外证据。
 
-**多重比较。** 开仓阈值敏感性，以及「一组对照」里按 p 值排序，都是同一段样本上的多次试验。最小的 p 值或最好的夏普会被挑得偏乐观。
+**Walk-forward。** 开仓阈值只在前半段按夏普挑选，后半段锁定该阈值，从空仓重新计，验证期不再改参数。
+
+**多标的。** 「协整诊断较好」按 EG p 值从小到大。「扣费后回测表现较好」按夏普从高到低。页面百分比只是显示格式，CSV 保留完整小数。
+
+**多重比较。** 开仓阈值敏感性，以及按 p 值或夏普给多只股票排序，都可能把同一段样本试很多次。最小的 p 值或最好的夏普会被挑得偏乐观。Walk-forward 的验证区间不参与挑选开仓阈值。
 
 **不要读成什么。** 样本内协整不保证以后还在。A/H 不能转换，溢价可以在高位停很多年。做空 A 股取决于能不能借到券。
 
@@ -1385,6 +1536,6 @@ with tab_note:
             st.markdown(changelog_path.read_text(encoding="utf-8"))
 
 st.markdown(
-    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.9 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
+    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.0 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
     unsafe_allow_html=True,
 )

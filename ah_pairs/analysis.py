@@ -159,6 +159,71 @@ def entry_sensitivity(
     return pd.DataFrame(rows)
 
 
+def walk_forward(
+    frame: pd.DataFrame,
+    params: StrategyParams,
+    entries: tuple[float, ...] = (1.0, 1.5, 2.0, 2.5, 3.0),
+) -> dict:
+    """前半段按夏普选开仓阈值，后半段锁定该阈值，不再调参。"""
+    if len(frame) < 120 or "z" not in frame.columns:
+        return {"ok": False, "message": "样本太短，无法分成训练区间和验证区间。"}
+    cut = len(frame) // 2
+    train = frame.iloc[:cut]
+    valid = frame.iloc[cut:]
+    best_entry = float(params.entry_z)
+    best_stop = float(params.stop_z)
+    best_sharpe = -np.inf
+    found = False
+    for entry in entries:
+        if entry <= params.exit_z:
+            continue
+        stop = float(params.stop_z)
+        if stop != 0 and stop <= entry:
+            stop = round(float(entry) + 0.5, 1)
+        trial = replace(params, entry_z=float(entry), stop_z=stop)
+        try:
+            _path, _trades, stats = run_backtest(train, trial)
+        except Exception:
+            continue
+        sharpe = stats["sharpe"]
+        if np.isfinite(sharpe) and sharpe > best_sharpe:
+            best_sharpe = float(sharpe)
+            best_entry = float(entry)
+            best_stop = stop
+            found = True
+    if not found:
+        best_entry = float(params.entry_z)
+        best_stop = float(params.stop_z)
+    locked = replace(params, entry_z=best_entry, stop_z=best_stop)
+    pieces = []
+    for name, sample, trial in (
+        ("训练（选出参数）", train, locked),
+        ("验证（锁定参数）", valid, locked),
+        ("全样本（锁定参数）", frame, locked),
+        ("全样本（侧栏当前参数）", frame, params),
+    ):
+        _path, _trades, stats = run_backtest(sample, trial)
+        pieces.append(
+            {
+                "区间": name,
+                "开仓 |z|": float(trial.entry_z),
+                "净收益": stats["total_return"],
+                "夏普": stats["sharpe"],
+                "最大回撤": stats["max_drawdown"],
+                "交易次数": stats["n_trades"],
+                "成本合计": stats["total_cost"],
+            }
+        )
+    return {
+        "ok": True,
+        "chosen_entry": best_entry,
+        "train_end": train.index.max(),
+        "valid_start": valid.index.min(),
+        "valid_end": valid.index.max(),
+        "table": pd.DataFrame(pieces),
+    }
+
+
 def pick_lowest_p(table: pd.DataFrame) -> pd.Series | None:
     """在一组对照里挑 Engle-Granger p 值最小的一行。"""
     if table.empty or "eg_pvalue" not in table.columns:
@@ -167,6 +232,16 @@ def pick_lowest_p(table: pd.DataFrame) -> pd.Series | None:
     if valid.empty:
         return None
     return valid.loc[valid["eg_pvalue"].idxmin()]
+
+
+def pick_best_sharpe(table: pd.DataFrame) -> pd.Series | None:
+    """在一组对照里挑扣费后夏普最高的一行。"""
+    if table.empty or "sharpe" not in table.columns:
+        return None
+    valid = table.dropna(subset=["sharpe"])
+    if valid.empty:
+        return None
+    return valid.loc[valid["sharpe"].idxmax()]
 
 
 def screen_one(prices: pd.DataFrame, params: StrategyParams, eval_start) -> dict:
@@ -183,7 +258,9 @@ def screen_one(prices: pd.DataFrame, params: StrategyParams, eval_start) -> dict
         "half_life": hl["half_life"],
         "sharpe": stats["sharpe"],
         "cagr": stats["cagr"],
+        "total_return": stats["total_return"],
         "max_drawdown": stats["max_drawdown"],
         "n_trades": stats["n_trades"],
+        "total_cost": stats["total_cost"],
         "latest_premium": float(premium.iloc[-1]) if len(premium) else np.nan,
     }

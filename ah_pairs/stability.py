@@ -13,8 +13,8 @@ from statsmodels.tsa.stattools import coint
 DEFAULT_LENGTHS = (126, 252, 504, 756, 1008)
 
 
-def eg_pvalue(y, x) -> float:
-    """快速 Engle-Granger p 值。滞后固定为 1，便于大量重复计算。"""
+def eg_pvalue(y, x, autolag: str | None = None) -> float:
+    """Engle-Granger p 值。默认滞后固定为 1，便于大量重复计算。autolag='aic' 与摘要页同一口径。"""
     y_arr = np.asarray(y, dtype=float)
     x_arr = np.asarray(x, dtype=float)
     mask = np.isfinite(y_arr) & np.isfinite(x_arr)
@@ -23,7 +23,10 @@ def eg_pvalue(y, x) -> float:
     if len(y_arr) < 80:
         return np.nan
     try:
-        _stat, pvalue, _crit = coint(y_arr, x_arr, trend="c", maxlag=1, autolag=None)
+        if autolag == "aic":
+            _stat, pvalue, _crit = coint(y_arr, x_arr, trend="c", autolag="aic")
+        else:
+            _stat, pvalue, _crit = coint(y_arr, x_arr, trend="c", maxlag=1, autolag=None)
     except Exception:
         return np.nan
     return float(pvalue)
@@ -114,13 +117,16 @@ def slice_checks(frame: pd.DataFrame) -> pd.DataFrame:
     specs.extend(_extreme_slices(frame))
     rows = []
     for name, sample in specs:
-        pvalue = eg_pvalue(sample["log_a"], sample["log_h"])
+        p_fixed = eg_pvalue(sample["log_a"], sample["log_h"])
+        p_aic = eg_pvalue(sample["log_a"], sample["log_h"], autolag="aic")
         rows.append(
             {
                 "情形": name,
                 "天数": int(len(sample.dropna(subset=["log_a", "log_h"]))),
-                "pvalue": pvalue,
-                "reject_5": bool(np.isfinite(pvalue) and pvalue < 0.05),
+                "pvalue": p_fixed,
+                "reject_5": bool(np.isfinite(p_fixed) and p_fixed < 0.05),
+                "pvalue_aic": p_aic,
+                "reject_5_aic": bool(np.isfinite(p_aic) and p_aic < 0.05),
             }
         )
     return pd.DataFrame(rows)

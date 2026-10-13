@@ -255,6 +255,61 @@ def test_hedge_ratio_ignores_the_future():
     assert np.isnan(b1[79])
 
 
+def test_next_close_flags_a_pending_order_when_the_signal_changes_at_the_last_bar():
+    from ah_pairs.backtest import current_state
+
+    idx = pd.bdate_range("2020-01-02", periods=30)
+    z = np.zeros(30)
+    z[-1] = 3.0
+    frame = pd.DataFrame(
+        {"z": z, "beta": np.ones(30), "ret_a": np.zeros(30), "ret_h": np.zeros(30)},
+        index=idx,
+    )
+    work, trades, _stats = run_backtest(frame, _params(fill="next_close"))
+    state = current_state(work, trades, "next_close")
+    assert state["position"] == 0
+    assert state["signal"] == -1
+    assert state["pending"]
+    same, same_trades, _stats = run_backtest(frame, _params(fill="same_close"))
+    flat = current_state(same, same_trades, "same_close")
+    assert flat["pending"] is False
+    assert flat["position"] == -1
+
+
+def test_walk_forward_locks_the_entry_chosen_on_the_first_half():
+    from ah_pairs.analysis import walk_forward
+
+    idx = pd.bdate_range("2018-01-02", periods=160)
+    z = np.zeros(160)
+    z[20:40] = 3.0
+    z[100:120] = 3.0
+    frame = pd.DataFrame(
+        {"z": z, "beta": np.ones(160), "ret_a": np.full(160, 0.0005), "ret_h": np.zeros(160)},
+        index=idx,
+    )
+    result = walk_forward(frame, _params(fill="same_close"))
+    assert result["ok"]
+    table = result["table"]
+    chosen = result["chosen_entry"]
+    assert table.loc[table["区间"] == "验证（锁定参数）", "开仓 |z|"].iloc[0] == chosen
+    assert table.loc[table["区间"] == "训练（选出参数）", "开仓 |z|"].iloc[0] == chosen
+
+
+def test_pick_best_sharpe_is_not_the_lowest_p():
+    from ah_pairs.analysis import pick_best_sharpe, pick_lowest_p
+
+    table = pd.DataFrame(
+        {
+            "公司": ["石油", "平安"],
+            "eg_pvalue": [0.007, 0.269],
+            "sharpe": [-0.38, 0.10],
+            "total_return": [-0.05, 0.02],
+        }
+    )
+    assert pick_lowest_p(table)["公司"] == "石油"
+    assert pick_best_sharpe(table)["公司"] == "平安"
+
+
 def test_next_close_does_not_earn_the_signal_day_and_respects_t_plus_one():
     z = np.array([0.0, 0.0, 3.0, 0.0, 0.0, 0.0])
     beta = np.ones(len(z))

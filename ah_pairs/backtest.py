@@ -240,6 +240,31 @@ def run_backtest(
     return work, trades, stats
 
 
+def current_state(frame: pd.DataFrame, trades: pd.DataFrame, fill: str) -> dict:
+    """最后一根 K 线收盘时的 z、持仓，以及 T+1 下有没有还没成交的信号。"""
+    held = int(frame["position"].iloc[-1]) if len(frame) else 0
+    signal = int(frame["target"].iloc[-1]) if len(frame) and "target" in frame.columns else held
+    z_value = float(frame["z"].iloc[-1]) if len(frame) else np.nan
+    pending = fill == "next_close" and signal != held
+    last_entry = None
+    last_exit = None
+    if trades is not None and len(trades) and "entry_date" in trades.columns:
+        last_entry = pd.Timestamp(pd.to_datetime(trades["entry_date"]).max())
+        if "closed" in trades.columns:
+            closed = trades[trades["closed"].astype(bool)]
+            if len(closed) and "exit_date" in closed.columns:
+                last_exit = pd.Timestamp(pd.to_datetime(closed["exit_date"]).max())
+    return {
+        "asof": frame.index.max() if len(frame) else None,
+        "z": z_value,
+        "position": held,
+        "signal": signal,
+        "pending": pending,
+        "last_entry": last_entry,
+        "last_exit": last_exit,
+    }
+
+
 def _extract_trades(frame: pd.DataFrame, fill: str) -> pd.DataFrame:
     position = frame["position"].to_numpy(dtype=int)
     equity = frame["equity"].to_numpy(dtype=float)
