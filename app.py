@@ -192,8 +192,24 @@ div[data-testid="stCaptionContainer"] p { color: #5a6a7a; font-size: 0.82rem; }
   font-size: 0.82rem;
 }
 .site-footer a { color: #1f4e79; text-decoration: none; }
+.lesson {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin: 0.35rem 0 0.9rem;
+}
+.lesson article {
+  background: #ffffff;
+  border: 1px solid #d5dee8;
+  border-radius: 8px;
+  padding: 0.85rem 0.95rem 0.8rem;
+  box-shadow: 0 1px 2px rgba(22, 50, 79, 0.05);
+}
+.lesson strong { display: block; color: #1f4e79; margin-bottom: 0.35rem; font-size: 0.95rem; }
+.lesson p { margin: 0; color: #3d4c5c; font-size: 0.92rem; line-height: 1.6; }
 @media (max-width: 900px) {
   .kpi-row, .kpi-row.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lesson { grid-template-columns: 1fr; }
   .mast { flex-direction: column; align-items: flex-start; }
   .brand h1 { font-size: 1.25rem; }
 }
@@ -502,9 +518,93 @@ st.session_state["pair_snapshot"] = {
 for note in notes:
     st.caption(note)
 
-tab_px, tab_coint, tab_bt, tab_flow, tab_scan, tab_note = st.tabs(
-    ["价差与信号", "协整诊断", "回测", "北向资金", "一组对照", "方法说明"]
+tab_easy, tab_px, tab_coint, tab_bt, tab_flow, tab_scan, tab_note = st.tabs(
+    ["先看懂", "价差与信号", "协整诊断", "回测", "北向资金", "一组对照", "方法说明"]
 )
+
+with tab_easy:
+    company = picked["name"]
+    p_text = _pval(eg["pvalue"])
+    life = _half_life_text(static_hl)
+    same_or_not = "更像会回到平常水平" if eg["reject_5"] else "还不能说它会回到平常水平"
+    st.markdown(
+        f"""
+这页看的是**同一家公司的两只股票**：内地的 A 股，和香港的 H 股。现在打开的是 **{company}**。
+
+它们不能互相兑换。所以两边价格不一样是常态，不是捡钱的机会。这个看板只回答一件事：价差偏离之后，历史上有没有回到附近。
+        """
+    )
+    st.markdown(
+        """
+<div class="lesson">
+  <article>
+    <strong>1. 两地各有一个价格</strong>
+    <p>A 股用人民币。H 股用港元，这里先乘汇率，换成人民币再比较。只保留两地都开市的日子。</p>
+  </article>
+  <article>
+    <strong>2. 看价差会不会回家</strong>
+    <p>协整的大白话是：两条价格可以各自乱走，但它们的差距常常会回到一条旧轨道附近。</p>
+  </article>
+  <article>
+    <strong>3. 偏得太多就试着对做</strong>
+    <p>A 股相对贵，就假设以后变便宜：卖 A、买 H。A 股相对便宜，就反过来。回到附近就平仓。</p>
+  </article>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(f"**用 {company} 现在这组数字对照着看**")
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(
+        f"**最近溢价 {_pct(premium_last)}**\n\nA 股比换成人民币后的 H 股贵多少。正数是 A 更贵，负数是 H 更贵。"
+    )
+    c2.markdown(
+        f"**EG p 值 {p_text}**\n\n越小，越能说这段时间价差像会回家。0.05 是常用分界。现在这页{same_or_not}。"
+    )
+    life_line = (
+        f"**半衰期 {life} 个交易日**\n\n如果价差真会回家，大概要多久走完一半路程。数字很大，就是回得很慢。"
+        if life not in {"—", "不收敛"}
+        else "**半衰期还看不出来**\n\n这段价差不像会稳定地回家，所以没有一个有意义的“几天回到一半”。"
+    )
+    c3.markdown(life_line)
+    st.markdown("**页面上其他词**")
+    st.markdown(
+        """
+- **β（贝塔）**：H 股动 1%，A 股大约跟着动多少。用来决定两边各买多少，而不是两边买一样多。
+- **z 分数**：价差离开自己最近平均水平有几个标准差。绝对值越大，偏得越厉害。
+- **夏普**：收益相对波动有多划算。负数就是这段回测在亏，而且亏得不稳。
+- **最大回撤**：净值从高点掉下去最深的那段。
+- **北向资金**：外资通过沪深港通买 A 股的净额。这里只是和价差放在一起看，不是证明它造成了价差。
+        """
+    )
+    st.markdown("**建议这样点**")
+    st.markdown(
+        f"""
+1. 先留在这一页，看懂 {company} 的溢价和 p 值。
+2. 打开「价差与信号」。浅色带是平常波动范围，三角是开仓，叉是平仓。
+3. 打开「回测」，看扣掉费用之后的净值。旁边还有只买 A、只买 H、两边各买一半的对照。
+4. 左侧可以换成工行、招行、石油。换完后，页顶会告诉你 p 值变大了还是变小了。
+        """
+    )
+    st.markdown(
+        """
+<div class="lesson">
+  <article>
+    <strong>不是无风险套利</strong>
+    <p>A 股和 H 股不能换成彼此。价差可以高很久，也可以继续走远。</p>
+  </article>
+  <article>
+    <strong>不是投资建议</strong>
+    <p>这里的买卖是历史回测。亏钱的结果也会照实显示，不代表以后该怎么下单。</p>
+  </article>
+  <article>
+    <strong>p 值小也不等于能赚钱</strong>
+    <p>就算价差像会回家，印花税、佣金和借券费仍可能把利润吃掉。</p>
+  </article>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 with tab_px:
     st.plotly_chart(prices_figure(frame), use_container_width=True)
