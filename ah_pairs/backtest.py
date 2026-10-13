@@ -352,6 +352,7 @@ def _performance_stats(
         "vol": float(vol * np.sqrt(252.0)) if np.isfinite(vol) else np.nan,
         "sharpe": sharpe,
         "max_drawdown": max_dd,
+        "calmar": float(cagr / abs(max_dd)) if np.isfinite(cagr) and np.isfinite(max_dd) and max_dd < 0 else np.nan,
         "turnover": turnover,
         "n_trades": int(len(closed)),
         "n_open": int((~trades["closed"]).sum()) if len(trades) else 0,

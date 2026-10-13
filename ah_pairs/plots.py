@@ -226,13 +226,14 @@ def spread_figure(frame: pd.DataFrame, z_window: int = 60) -> go.Figure:
     return _layout(fig, "价差与开平仓", height=420)
 
 
-def _trade_markers(fig: go.Figure, frame: pd.DataFrame, series: pd.Series) -> None:
+def _trade_markers(fig: go.Figure, frame: pd.DataFrame, series: pd.Series, row: int | None = None) -> None:
     if "position" not in frame.columns:
         return
     position = frame["position"].fillna(0)
     previous = position.shift(1).fillna(0)
     entries = frame.loc[(position != 0) & (previous == 0)]
     exits = frame.loc[(position == 0) & (previous != 0)]
+    extra = {"row": row, "col": 1} if row else {}
     if len(entries):
         fig.add_trace(
             go.Scatter(
@@ -241,7 +242,8 @@ def _trade_markers(fig: go.Figure, frame: pd.DataFrame, series: pd.Series) -> No
                 name="开仓",
                 mode="markers",
                 marker=dict(symbol="triangle-up", size=9, color=GREEN),
-            )
+            ),
+            **extra,
         )
     if len(exits):
         fig.add_trace(
@@ -251,8 +253,79 @@ def _trade_markers(fig: go.Figure, frame: pd.DataFrame, series: pd.Series) -> No
                 name="平仓",
                 mode="markers",
                 marker=dict(symbol="x", size=8, color=RED),
-            )
+            ),
+            **extra,
         )
+
+
+def core_signal_figure(frame: pd.DataFrame, z_window: int, entry: float, exit_: float, stop: float) -> go.Figure:
+    """价差、σ 带、开平仓和 z-score 放在同一张图里。"""
+    spread = frame["spread"]
+    mean = spread.rolling(z_window, min_periods=z_window).mean()
+    std = spread.rolling(z_window, min_periods=z_window).std(ddof=1)
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        row_heights=[0.62, 0.38],
+        subplot_titles=("价差", "z-score"),
+    )
+    for width, opacity in ((2.0, 0.10), (1.5, 0.14), (1.0, 0.18)):
+        fig.add_trace(
+            go.Scatter(
+                x=frame.index,
+                y=mean + width * std,
+                line=dict(width=0),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=frame.index,
+                y=mean - width * std,
+                name="±2σ" if width == 2 else "",
+                fill="tonexty",
+                fillcolor=f"rgba(31,78,121,{opacity})",
+                line=dict(width=0),
+                showlegend=width == 2,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
+    fig.add_trace(
+        go.Scatter(x=frame.index, y=mean, name="滚动均值", line=dict(color=SLATE, width=1, dash="dot")),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=frame.index, y=spread, name="交易价差", line=dict(color=NAVY, width=1.8)),
+        row=1,
+        col=1,
+    )
+    _trade_markers(fig, frame, spread, row=1)
+    fig.add_trace(
+        go.Scatter(x=frame.index, y=frame["z"], name="z-score", line=dict(color="#e07a2f", width=1.4)),
+        row=2,
+        col=1,
+    )
+    for level, color, dash in (
+        (entry, RED, "dash"),
+        (-entry, GREEN, "dash"),
+        (exit_, SLATE, "dot"),
+        (-exit_, SLATE, "dot"),
+    ):
+        fig.add_hline(y=level, line_dash=dash, line_color=color, line_width=1, row=2, col=1)
+    if stop and stop > 0:
+        fig.add_hline(y=stop, line_dash="dot", line_color=GOLD, line_width=1, row=2, col=1)
+        fig.add_hline(y=-stop, line_dash="dot", line_color=GOLD, line_width=1, row=2, col=1)
+    _position_bands(fig, frame, row=1)
+    _position_bands(fig, frame, row=2)
+    return _layout(fig, "价差、开平仓与 z-score", height=640)
 
 
 def hedge_figure(frame: pd.DataFrame) -> go.Figure:

@@ -15,14 +15,13 @@ from ah_pairs.data import load_pair
 from ah_pairs.export import equity_png, metrics_latex, metrics_table, spread_png
 from ah_pairs.northbound import latest_valid, load_northbound
 from ah_pairs.plots import (
+    core_signal_figure,
     equity_figure,
     hedge_figure,
     northbound_figure,
     premium_figure,
     prices_figure,
     rolling_p_figure,
-    signal_figure,
-    spread_figure,
     static_resid_figure,
 )
 from ah_pairs.universe import LIQUID_A_CODES, liquid_subset, load_universe, refresh_universe
@@ -288,7 +287,7 @@ with title_col:
     st.markdown(
         """
 <div class="brand">
-  <p class="kicker">V0.5 · EUGENE FINANCE</p>
+  <p class="kicker">V0.6 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H 股协整配对交易研究看板</h1>
   <p class="subtitle">Interactive Cointegration &amp; Dynamic Pairs Trading Lab · 仅供学习与研究，不构成投资建议</p>
 </div>
@@ -390,14 +389,19 @@ with st.sidebar:
         help="持仓期间 β 相对开仓时变化超过这个比例，才调整对冲，避免每天付印花税。",
     )
     fill_label = st.radio(
-        "成交",
-        ["次日收盘", "当日收盘"],
+        "T+1 约束",
+        ["已考虑：次日收盘", "未考虑：当日收盘"],
         horizontal=True,
-        help="次日收盘满足 A 股 T+1：买入当天不能卖出。当日收盘更乐观。",
+        help="A 股当天买入不能当天卖。选「已考虑」时，信号出现后的下一个同时开市日才成交。",
     )
-    fill = "next_close" if fill_label == "次日收盘" else "same_close"
+    fill = "next_close" if fill_label.startswith("已考虑") else "same_close"
     allow_short_a = st.checkbox("允许做空 A 股", value=True, help="关掉后，A 股偏贵时不交易，只在 A 股相对便宜时买 A、卖 H。")
     require_positive_beta = st.checkbox("β 不为正时空仓", value=True, help="对冲比率不为正时不建仓。")
+    include_costs = st.checkbox(
+        "计入交易成本",
+        value=True,
+        help="默认扣除 A 股印花税和佣金、H 股费用、融券费，以及汇率与成交滑点。关掉后看到的是不扣这些费用的结果。",
+    )
 
     with st.expander("成本", expanded=False):
         statutory = st.checkbox("使用法定印花税档期", value=True, help="A 股 2023-08-28 起卖方 0.05%，此前 0.10%。H 股 2021-08-01 至 2023-11-16 为 0.13%。")
@@ -428,14 +432,14 @@ try:
         fill=fill,
         beta_band=float(beta_band),
         costs=CostParams(
-            a_commission=float(a_commission),
-            h_commission=float(h_commission),
-            a_borrow_annual=float(a_borrow),
-            h_borrow_annual=float(h_borrow),
-            use_statutory_stamp=bool(statutory),
-            a_stamp_sell=float(a_stamp),
-            h_stamp=float(h_stamp),
-            slippage=float(slippage),
+            a_commission=float(a_commission) if include_costs else 0.0,
+            h_commission=float(h_commission) if include_costs else 0.0,
+            a_borrow_annual=float(a_borrow) if include_costs else 0.0,
+            h_borrow_annual=float(h_borrow) if include_costs else 0.0,
+            use_statutory_stamp=bool(statutory) and include_costs,
+            a_stamp_sell=float(a_stamp) if include_costs else 0.0,
+            h_stamp=float(h_stamp) if include_costs else 0.0,
+            slippage=float(slippage) if include_costs else 0.0,
         ),
     )
 except ValueError as exc:
@@ -477,7 +481,7 @@ st.markdown(
     f"""
 <div class="mast">
   <div>
-    <p class="kicker">V0.5 · 这一对</p>
+    <p class="kicker">V0.6 · 这一对</p>
     <p class="pair-name">{picked["name"]}</p>
     <p class="meta">{picked.a_code} · {picked.h_code} · 最近交易日 {frame.index.max().date()} · {frame.index.min().date()} — {frame.index.max().date()} · {len(frame)} 个同时开市日。A、H 节假日不同，只保留两边都开市的日期。</p>
   </div>
@@ -697,13 +701,15 @@ with tab_easy:
     _render_quick_compare("compare_from_easy")
 
 with tab_px:
+    st.plotly_chart(
+        core_signal_figure(frame, params.z_window, params.entry_z, params.exit_z, params.stop_z),
+        use_container_width=True,
+    )
+    st.caption("上图浅色带是 ±1、±1.5、±2 个标准差，三角是开仓，叉是平仓，底色是持仓区间。下图是同一个 z 分数。")
     st.plotly_chart(prices_figure(frame), use_container_width=True)
     left, right = st.columns(2)
     left.plotly_chart(premium_figure(frame), use_container_width=True)
     right.plotly_chart(hedge_figure(frame), use_container_width=True)
-    st.plotly_chart(spread_figure(frame, params.z_window), use_container_width=True)
-    st.caption("浅色带是滚动均值的 ±1、±1.5、±2 个标准差。三角是开仓，叉是平仓。")
-    st.plotly_chart(signal_figure(frame, params.entry_z, params.exit_z, params.stop_z), use_container_width=True)
 
 with tab_coint:
     st.markdown(
@@ -807,15 +813,18 @@ with tab_bt:
             ("胜率", _pct(stats["win_rate"]), ""),
             ("平均持有（开市日）", _num(stats["avg_holding_days"], 1), ""),
             ("持仓占比", _pct(stats["exposure"]), ""),
+            ("年化换手", _num(stats["turnover"], 2), ""),
+            ("Calmar", _num(stats["calmar"], 2), _tone(stats["calmar"])),
         ],
         columns=4,
     )
     st.plotly_chart(equity_figure(frame), use_container_width=True)
-    fill_text = "信号在收盘产生，下一个同时开市日的收盘成交。" if params.fill == "next_close" else "信号和成交放在同一个收盘。这比次日成交更紧，仍是日频，没有日内来回。"
-    short_text = "允许做空 A 股，并扣除侧栏里的融券年化。" if params.allow_short_a else "不允许做空 A 股：价差偏高时策略空仓，只在 A 股相对便宜时买 A、卖 H。"
+    short_text = "允许做空 A 股。" if params.allow_short_a else "不允许做空 A 股：价差偏高时不交易。"
+    cost_text = "已计入印花税、佣金、融券费和滑点。" if include_costs else "未扣交易成本，看到的是毛结果。"
+    t1_text = "已按 T+1：下一个同时开市日收盘才成交。" if params.fill == "next_close" else "未按 T+1：信号当日收盘就成交，这比实盘更乐观。"
     st.caption(
         f"{frame.index.min().date()} 至 {frame.index.max().date()}，{stats['n_days']} 个同时开市日。"
-        f"夏普按 252 天年化，无风险利率按 0。成本含侧栏里的佣金、法定印花税、融券费和滑点。{fill_text}{short_text}"
+        f"夏普按 252 天年化，无风险利率按 0。Calmar 是年化收益除以最大回撤的绝对值。{cost_text}{t1_text}{short_text}"
         " 净值图里的只持有 A、只持有 H 和等权 A+H 是对照，不是这个策略的基准。"
     )
     sensitivity = result.get("sensitivity")
@@ -869,6 +878,7 @@ with tab_bt:
                 "收益": st.column_config.NumberColumn(format="%.2%"),
             },
         )
+    trade_csv = show.to_csv(index=False).encode("utf-8-sig") if not trades.empty else "开仓,平仓\n".encode("utf-8-sig")
     export = frame.reset_index()
     summary = metrics_table(result, picked["name"], picked.a_code, picked.h_code)
     latex = metrics_latex(summary)
@@ -891,6 +901,12 @@ with tab_bt:
         "日频结果 CSV",
         export.to_csv(index=False).encode("utf-8-sig"),
         file_name=f"{picked.a_code}_{picked.h_code}_daily.csv",
+        mime="text/csv",
+    )
+    st.download_button(
+        "交易明细 CSV",
+        trade_csv,
+        file_name=f"{picked.a_code}_trades.csv",
         mime="text/csv",
     )
     if spread_bytes and equity_bytes:
@@ -999,6 +1015,6 @@ with tab_note:
     )
 
 st.markdown(
-    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.5 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
+    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.6 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
     unsafe_allow_html=True,
 )
