@@ -159,6 +159,16 @@ def entry_sensitivity(
     return pd.DataFrame(rows)
 
 
+def pick_lowest_p(table: pd.DataFrame) -> pd.Series | None:
+    """在一组对照里挑 Engle-Granger p 值最小的一行。"""
+    if table.empty or "eg_pvalue" not in table.columns:
+        return None
+    valid = table.dropna(subset=["eg_pvalue"])
+    if valid.empty:
+        return None
+    return valid.loc[valid["eg_pvalue"].idxmin()]
+
+
 def screen_one(prices: pd.DataFrame, params: StrategyParams, eval_start) -> dict:
     result = analyze_frame(prices, params, eval_start=eval_start, full_diagnostics=False)
     eg = result["eg"]

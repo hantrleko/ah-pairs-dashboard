@@ -115,6 +115,20 @@ def test_residual_adf_is_separate_from_the_cointegration_pvalue():
     assert "不能代替" in adf["note"]
 
 
+def test_pick_lowest_p_uses_the_smallest_finite_value():
+    from ah_pairs.analysis import pick_lowest_p
+
+    table = pd.DataFrame(
+        {
+            "公司": ["平安", "工行", "缺数"],
+            "eg_pvalue": [0.27, 0.04, np.nan],
+        }
+    )
+    picked = pick_lowest_p(table)
+    assert picked["公司"] == "工行"
+    assert pick_lowest_p(pd.DataFrame()) is None
+
+
 def test_entry_grid_marks_the_threshold_in_use():
     z = np.concatenate([np.zeros(2), np.full(6, -2.4), np.zeros(4)])
     frame = _book(z, np.ones(len(z)))

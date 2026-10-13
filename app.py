@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from ah_pairs.analysis import analyze_frame, screen_one, warmup_start
+from ah_pairs.analysis import analyze_frame, pick_lowest_p, screen_one, warmup_start
 from ah_pairs.backtest import StrategyParams
 from ah_pairs.costs import CostParams
 from ah_pairs.data import load_pair
@@ -288,7 +288,7 @@ with title_col:
     st.markdown(
         """
 <div class="brand">
-  <p class="kicker">V0.4 · EUGENE FINANCE</p>
+  <p class="kicker">V0.5 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H 股协整配对交易研究看板</h1>
   <p class="subtitle">Interactive Cointegration &amp; Dynamic Pairs Trading Lab · 仅供学习与研究，不构成投资建议</p>
 </div>
@@ -316,7 +316,7 @@ with st.sidebar:
     codes = universe["a_code"].tolist()
     if "pair_select" not in st.session_state or st.session_state["pair_select"] not in codes:
         st.session_state["pair_select"] = "601318" if "601318" in codes else codes[0]
-    quick = [("601318", "平安"), ("601398", "工行*"), ("600036", "招行"), ("601857", "石油")]
+    quick = [("601318", "平安"), ("601398", "工行"), ("600036", "招行"), ("601857", "石油")]
     left, right = st.columns(2)
     for column, pairs in ((left, quick[:2]), (right, quick[2:])):
         with column:
@@ -324,7 +324,7 @@ with st.sidebar:
                 if st.button(name, key=f"quick_{code}", use_container_width=True):
                     st.session_state["pair_select"] = code
                     st.rerun()
-    st.caption("带 * 的是 2018 年以来全样本更接近协整的一对。换区间后，以当前页的 EG p 值为准。腾讯没有对应 A 股。")
+    st.caption("这四只谁更接近协整，用「先看懂」里的比较按钮按当前区间重算。腾讯没有对应 A 股。")
     a_code = st.selectbox(
         "公司",
         codes,
@@ -477,7 +477,7 @@ st.markdown(
     f"""
 <div class="mast">
   <div>
-    <p class="kicker">V0.4 · 这一对</p>
+    <p class="kicker">V0.5 · 这一对</p>
     <p class="pair-name">{picked["name"]}</p>
     <p class="meta">{picked.a_code} · {picked.h_code} · 最近交易日 {frame.index.max().date()} · {frame.index.min().date()} — {frame.index.max().date()} · {len(frame)} 个同时开市日。A、H 节假日不同，只保留两边都开市的日期。</p>
   </div>
@@ -517,6 +517,95 @@ st.session_state["pair_snapshot"] = {
 }
 for note in notes:
     st.caption(note)
+
+QUICK_COMPARE = (
+    ("601318", "平安"),
+    ("601398", "工行"),
+    ("600036", "招行"),
+    ("601857", "石油"),
+)
+
+
+def _compare_key() -> str:
+    return "|".join(
+        [
+            str(start_day),
+            str(end_day),
+            params.hedge,
+            str(params.hedge_window),
+            str(params.z_window),
+            f"{params.entry_z:.1f}",
+            f"{params.exit_z:.1f}",
+            params.fill,
+            "1" if params.allow_short_a else "0",
+        ]
+    )
+
+
+def _render_quick_compare(button_key: str) -> None:
+    st.markdown("**平安、工行、招行、石油，谁更接近协整**")
+    st.caption("用左侧现在的日期和参数现算。p 值更小，只表示价差更像会回到附近。")
+    if st.button("按当前区间比较这四只", key=button_key):
+        rows = []
+        progress = st.progress(0.0, text="准备比较")
+        for i, (code, short_name) in enumerate(QUICK_COMPARE):
+            progress.progress(i / len(QUICK_COMPARE), text=short_name)
+            match = universe.loc[universe["a_code"] == code]
+            if match.empty:
+                rows.append({"简称": short_name, "公司": code, "eg_pvalue": np.nan, "说明": "名单里没有"})
+                continue
+            item = match.iloc[0]
+            try:
+                pair_prices, _pair_notes = cached_pair(item.a_code, item.h_code, warm, str(end_day))
+                summary = screen_one(pair_prices, params, pd.Timestamp(start_day))
+                rows.append(
+                    {
+                        "简称": short_name,
+                        "公司": item["name"],
+                        "A": item.a_code,
+                        "H": item.h_code,
+                        **summary,
+                        "说明": "",
+                    }
+                )
+            except Exception as exc:
+                rows.append(
+                    {
+                        "简称": short_name,
+                        "公司": item["name"],
+                        "A": item.a_code,
+                        "H": item.h_code,
+                        "eg_pvalue": np.nan,
+                        "说明": str(exc),
+                    }
+                )
+        progress.empty()
+        st.session_state["quick_compare"] = {"key": _compare_key(), "table": pd.DataFrame(rows)}
+    saved = st.session_state.get("quick_compare")
+    if not isinstance(saved, dict) or not isinstance(saved.get("table"), pd.DataFrame):
+        return
+    if saved.get("key") != _compare_key():
+        st.caption("日期或参数已经变了，需要再比一次。")
+        return
+    table = saved["table"]
+    best = pick_lowest_p(table)
+    if best is not None:
+        st.markdown(
+            f"这四只里，**{best['公司']}** 的 EG p 值最小，是 {_pval(best['eg_pvalue'])}。"
+            "这只说明它更接近协整，不说明扣完费用后一定赚钱。"
+        )
+    view = table.copy()
+    if "eg_pvalue" in view.columns:
+        view["EG p 值"] = view["eg_pvalue"].map(_pval)
+    if "half_life" in view.columns:
+        view["半衰期"] = view["half_life"].map(lambda v: _num(v, 1))
+    if "sharpe" in view.columns:
+        view["夏普"] = view["sharpe"].map(lambda v: _num(v, 2))
+    if "total_return" not in view.columns and "说明" in view.columns:
+        pass
+    columns = [col for col in ["简称", "公司", "A", "H", "EG p 值", "半衰期", "夏普", "说明"] if col in view.columns]
+    st.dataframe(view[columns], hide_index=True, use_container_width=True)
+
 
 tab_easy, tab_px, tab_coint, tab_bt, tab_flow, tab_scan, tab_note = st.tabs(
     ["先看懂", "价差与信号", "协整诊断", "回测", "北向资金", "一组对照", "方法说明"]
@@ -605,6 +694,7 @@ with tab_easy:
         """,
         unsafe_allow_html=True,
     )
+    _render_quick_compare("compare_from_easy")
 
 with tab_px:
     st.plotly_chart(prices_figure(frame), use_container_width=True)
@@ -853,6 +943,7 @@ with tab_flow:
 
 with tab_scan:
     st.markdown("用侧栏里的同一套参数，给流动性较好的几只 A+H 做对照。第一次会下载行情。")
+    _render_quick_compare("compare_from_scan")
     scan_names = liquid_subset(cached_universe()).head(12)
     st.caption("、".join(scan_names["name"].tolist()))
     if st.button("扫描这组公司"):
@@ -908,6 +999,6 @@ with tab_note:
     )
 
 st.markdown(
-    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.4 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
+    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.5 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
     unsafe_allow_html=True,
 )
