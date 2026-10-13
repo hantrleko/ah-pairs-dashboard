@@ -39,7 +39,7 @@ def _layout(fig: go.Figure, title: str, height: int = 380) -> go.Figure:
             y=1.02,
             x=0,
             bgcolor="rgba(0,0,0,0)",
-            font=dict(size=12, color=MUTED),
+            font=dict(size=13, color=INK),
         ),
         margin=dict(l=48, r=18, t=64, b=32),
         height=height,
@@ -106,7 +106,7 @@ def prices_figure(frame: pd.DataFrame) -> go.Figure:
             x=frame.index,
             y=frame["a_cny"] / base_a * 100,
             name="A 股",
-            line=dict(color=NAVY, width=1.8),
+            line=dict(color=NAVY, width=2.4),
         )
     )
     fig.add_trace(
@@ -114,7 +114,7 @@ def prices_figure(frame: pd.DataFrame) -> go.Figure:
             x=frame.index,
             y=frame["h_cny"] / base_h * 100,
             name="H 股",
-            line=dict(color=RUST, width=1.6),
+            line=dict(color="#e07a2f", width=2.2),
         )
     )
     return _layout(fig, "价格，起点 = 100")
@@ -167,7 +167,7 @@ def signal_figure(frame: pd.DataFrame, entry: float, exit_: float, stop: float) 
         col=1,
     )
     fig.add_trace(
-        go.Scatter(x=frame.index, y=frame["w_h"], name="H 股权重", line=dict(color=RUST, width=1.3)),
+        go.Scatter(x=frame.index, y=frame["w_h"], name="H 股权重", line=dict(color="#e07a2f", width=1.5)),
         row=2,
         col=1,
     )
@@ -197,7 +197,7 @@ def spread_figure(frame: pd.DataFrame, z_window: int = 60) -> go.Figure:
             go.Scatter(
                 x=frame.index,
                 y=mean - width * std,
-                name=f"−{width:g}σ",
+                name="±2σ" if width == 2.0 else f"−{width:g}σ",
                 fill="tonexty",
                 fillcolor=f"rgba(31,78,121,{opacity})",
                 line=dict(width=0),

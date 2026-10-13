@@ -42,7 +42,8 @@ html, body, [class*="css"] { font-family: "Segoe UI", "Microsoft YaHei", sans-se
 header[data-testid="stHeader"] { background: transparent; }
 #MainMenu, footer, [data-testid="stToolbar"] { visibility: hidden; }
 div[data-testid="stDecoration"] { display: none; }
-.block-container { padding-top: 1.15rem; padding-bottom: 2.5rem; max-width: 1180px; }
+.block-container { padding-top: 0.45rem; padding-bottom: 2.2rem; max-width: 1180px; }
+[data-testid="stMain"] [data-testid="stVerticalBlock"] { gap: 0.35rem; }
 section[data-testid="stSidebar"] {
   background: #eef3f8;
   border-right: 1px solid #d5dee8;
@@ -116,9 +117,9 @@ div[data-testid="stCaptionContainer"] p { color: #5a6a7a; font-size: 0.82rem; }
   justify-content: space-between;
   align-items: flex-end;
   gap: 1.5rem;
-  padding: 0.15rem 0 0.85rem;
+  padding: 0 0 0.55rem;
   border-bottom: 1px solid #d5dee8;
-  margin-bottom: 0.85rem;
+  margin: 0.15rem 0 0.55rem;
 }
 .mast .kicker, .brand .kicker {
   margin: 0 0 0.2rem;
@@ -156,13 +157,15 @@ div[data-testid="stCaptionContainer"] p { color: #5a6a7a; font-size: 0.82rem; }
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.55rem;
-  margin: 0.2rem 0 0.85rem;
+  margin: 0 0 0.65rem;
 }
 .kpi-row.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .kpi {
   background: #ffffff;
   border: 1px solid #d5dee8;
+  border-radius: 8px;
   padding: 0.62rem 0.75rem 0.55rem;
+  box-shadow: 0 1px 2px rgba(22, 50, 79, 0.05), 0 6px 16px rgba(22, 50, 79, 0.04);
 }
 .kpi span {
   display: block;
@@ -188,6 +191,7 @@ div[data-testid="stCaptionContainer"] p { color: #5a6a7a; font-size: 0.82rem; }
   color: #5a6a7a;
   font-size: 0.82rem;
 }
+.site-footer a { color: #1f4e79; text-decoration: none; }
 @media (max-width: 900px) {
   .kpi-row, .kpi-row.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mast { flex-direction: column; align-items: flex-start; }
@@ -268,7 +272,7 @@ with title_col:
     st.markdown(
         """
 <div class="brand">
-  <p class="kicker">V0.3 · EUGENE FINANCE</p>
+  <p class="kicker">V0.4 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H 股协整配对交易研究看板</h1>
   <p class="subtitle">Interactive Cointegration &amp; Dynamic Pairs Trading Lab · 仅供学习与研究，不构成投资建议</p>
 </div>
@@ -296,7 +300,7 @@ with st.sidebar:
     codes = universe["a_code"].tolist()
     if "pair_select" not in st.session_state or st.session_state["pair_select"] not in codes:
         st.session_state["pair_select"] = "601318" if "601318" in codes else codes[0]
-    quick = [("601318", "平安"), ("601398", "工行"), ("600036", "招行"), ("601857", "石油")]
+    quick = [("601318", "平安"), ("601398", "工行*"), ("600036", "招行"), ("601857", "石油")]
     left, right = st.columns(2)
     for column, pairs in ((left, quick[:2]), (right, quick[2:])):
         with column:
@@ -304,7 +308,7 @@ with st.sidebar:
                 if st.button(name, key=f"quick_{code}", use_container_width=True):
                     st.session_state["pair_select"] = code
                     st.rerun()
-    st.caption("腾讯没有对应 A 股，不在这张名单里。")
+    st.caption("带 * 的是 2018 年以来全样本更接近协整的一对。换区间后，以当前页的 EG p 值为准。腾讯没有对应 A 股。")
     a_code = st.selectbox(
         "公司",
         codes,
@@ -330,35 +334,69 @@ with st.sidebar:
             st.error(f"更新股票池失败：{exc}")
 
     st.header("信号")
-    hedge_label = st.radio("对冲比率", ["滚动 OLS", "卡尔曼滤波"], horizontal=True)
+    hedge_label = st.radio(
+        "对冲比率",
+        ["滚动 OLS", "卡尔曼滤波"],
+        horizontal=True,
+        help="两条 β 都会画出来。仓位只用选中的这一条，而且只用当天以前的价格。",
+    )
     hedge = "rolling" if hedge_label == "滚动 OLS" else "kalman"
-    hedge_window = st.slider("估计窗口（交易日）", 40, 250, 120)
+    hedge_window = st.slider(
+        "估计窗口（交易日）",
+        40,
+        250,
+        120,
+        help="滚动 OLS 的估计长度，也是卡尔曼滤波的初始样本。",
+    )
     kalman_delta = st.select_slider(
         "卡尔曼 δ",
         options=[1e-6, 1e-5, 1e-4, 1e-3, 1e-2],
         value=1e-4,
         disabled=hedge != "kalman",
+        help="状态噪声相对观测噪声的大小。越大，β 越跟着近期价格走。",
     )
-    z_window = st.slider("z 窗口（交易日）", 20, 120, 60)
-    entry_z = st.slider("开仓 |z|", 1.0, 3.5, 2.0, 0.1)
-    exit_z = st.slider("平仓 |z|", 0.0, 1.5, 0.5, 0.1)
-    stop_z = st.slider("止损 |z|（0 表示不用）", 0.0, 6.0, 4.0, 0.1)
-    beta_band = st.slider("β 再平衡带", 0.0, 0.50, 0.10, 0.01)
-    fill_label = st.radio("成交", ["次日收盘", "当日收盘"], horizontal=True)
+    z_window = st.slider(
+        "z 窗口（交易日）",
+        20,
+        120,
+        60,
+        help="z 分数和价差图上 σ 带使用的滚动窗口。",
+    )
+    entry_z = st.slider("开仓 |z|", 1.0, 3.5, 2.0, 0.1, help="|z| 超过这里才开仓。越大，交易越少。")
+    exit_z = st.slider("平仓 |z|", 0.0, 1.5, 0.5, 0.1, help="|z| 回到这里以内就平仓，必须小于开仓阈值。")
+    stop_z = st.slider("止损 |z|（0 表示不用）", 0.0, 6.0, 4.0, 0.1, help="|z| 继续扩大到这里就止损。0 表示不止损。")
+    beta_band = st.slider(
+        "β 再平衡带",
+        0.0,
+        0.50,
+        0.10,
+        0.01,
+        help="持仓期间 β 相对开仓时变化超过这个比例，才调整对冲，避免每天付印花税。",
+    )
+    fill_label = st.radio(
+        "成交",
+        ["次日收盘", "当日收盘"],
+        horizontal=True,
+        help="次日收盘满足 A 股 T+1：买入当天不能卖出。当日收盘更乐观。",
+    )
     fill = "next_close" if fill_label == "次日收盘" else "same_close"
-    allow_short_a = st.checkbox("允许做空 A 股", value=True)
-    require_positive_beta = st.checkbox("β 不为正时空仓", value=True)
+    allow_short_a = st.checkbox("允许做空 A 股", value=True, help="关掉后，A 股偏贵时不交易，只在 A 股相对便宜时买 A、卖 H。")
+    require_positive_beta = st.checkbox("β 不为正时空仓", value=True, help="对冲比率不为正时不建仓。")
 
-    st.header("成本")
-    statutory = st.checkbox("使用法定印花税档期", value=True)
-    a_commission = _bps("A 股佣金（bps，单边）", 2.5, "a_comm")
-    a_stamp = _bps("A 股卖出印花税（bps，关闭法定档期时使用）", 5.0, "a_stamp")
-    h_commission = _bps("H 股佣金（bps，单边）", 4.0, "h_comm")
-    h_stamp = _bps("H 股印花税（bps，单边，关闭法定档期时使用）", 10.0, "h_stamp")
-    a_borrow = st.number_input("A 股融券年化（%）", 0.0, 30.0, 5.0, 0.5) / 100
-    h_borrow = st.number_input("H 股融券年化（%）", 0.0, 30.0, 2.0, 0.5) / 100
-    slippage = _bps("汇率与成交滑点（bps，单边）", 0.0, "slip")
+    with st.expander("成本", expanded=False):
+        statutory = st.checkbox("使用法定印花税档期", value=True, help="A 股 2023-08-28 起卖方 0.05%，此前 0.10%。H 股 2021-08-01 至 2023-11-16 为 0.13%。")
+        a_commission = _bps("A 股佣金（bps，单边）", 2.5, "a_comm")
+        a_stamp = _bps("A 股卖出印花税（bps，关闭法定档期时使用）", 5.0, "a_stamp")
+        h_commission = _bps("H 股佣金（bps，单边）", 4.0, "h_comm")
+        h_stamp = _bps("H 股印花税（bps，单边，关闭法定档期时使用）", 10.0, "h_stamp")
+        a_borrow = st.number_input("A 股融券年化（%）", 0.0, 30.0, 5.0, 0.5, help="做空 A 股时按这个年化费率逐日扣除。") / 100
+        h_borrow = st.number_input("H 股融券年化（%）", 0.0, 30.0, 2.0, 0.5, help="做空 H 股时按这个年化费率逐日扣除。") / 100
+        slippage = _bps("汇率与成交滑点（bps，单边）", 0.0, "slip")
     reload_prices = st.button("重新下载这对行情")
+    st.divider()
+    st.caption("其他工具")
+    st.markdown("[EF Lab](https://eugenefinance.tech)")
+    st.markdown("[本项目 GitHub](https://github.com/hantrleko/ah-pairs-dashboard)")
 
 try:
     params = StrategyParams(
@@ -423,7 +461,7 @@ st.markdown(
     f"""
 <div class="mast">
   <div>
-    <p class="kicker">V0.3 · 这一对</p>
+    <p class="kicker">V0.4 · 这一对</p>
     <p class="pair-name">{picked["name"]}</p>
     <p class="meta">{picked.a_code} · {picked.h_code} · 最近交易日 {frame.index.max().date()} · {frame.index.min().date()} — {frame.index.max().date()} · {len(frame)} 个同时开市日。A、H 节假日不同，只保留两边都开市的日期。</p>
   </div>
@@ -450,6 +488,17 @@ if eg["reject_5"]:
 else:
     verdict = '<p class="note">这段区间没有在 5% 水平上拒绝无协整。回测仍会按规则下单，价差不一定回到均值。</p>'
 st.markdown(verdict, unsafe_allow_html=True)
+prev = st.session_state.get("pair_snapshot")
+if prev and prev.get("code") != picked.a_code:
+    st.caption(
+        f"刚从{prev['name']}换到{picked['name']}：EG p 从 {prev['p']} 变为 {_pval(eg['pvalue'])}。"
+        "p 更小只说明这段样本更接近协整，不是策略一定更好。"
+    )
+st.session_state["pair_snapshot"] = {
+    "code": picked.a_code,
+    "name": picked["name"],
+    "p": _pval(eg["pvalue"]),
+}
 for note in notes:
     st.caption(note)
 
@@ -463,6 +512,7 @@ with tab_px:
     left.plotly_chart(premium_figure(frame), use_container_width=True)
     right.plotly_chart(hedge_figure(frame), use_container_width=True)
     st.plotly_chart(spread_figure(frame, params.z_window), use_container_width=True)
+    st.caption("浅色带是滚动均值的 ±1、±1.5、±2 个标准差。三角是开仓，叉是平仓。")
     st.plotly_chart(signal_figure(frame, params.entry_z, params.exit_z, params.stop_z), use_container_width=True)
 
 with tab_coint:
@@ -758,6 +808,6 @@ with tab_note:
     )
 
 st.markdown(
-    '<p class="site-footer">Part of EF Lab · eugenefinance.tech · V0.3 · 仅供学术研究与学习使用，不构成任何投资建议</p>',
+    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.4 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
     unsafe_allow_html=True,
 )
