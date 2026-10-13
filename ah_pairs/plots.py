@@ -177,34 +177,110 @@ def signal_figure(frame: pd.DataFrame, entry: float, exit_: float, stop: float) 
     return _layout(fig, "信号与持仓", height=560)
 
 
-def spread_figure(frame: pd.DataFrame) -> go.Figure:
+def spread_figure(frame: pd.DataFrame, z_window: int = 60) -> go.Figure:
+    spread = frame["spread"]
+    mean = spread.rolling(z_window, min_periods=z_window).mean()
+    std = spread.rolling(z_window, min_periods=z_window).std(ddof=1)
     fig = go.Figure()
+    for width, opacity in ((2.0, 0.08), (1.5, 0.12), (1.0, 0.16)):
+        fig.add_trace(
+            go.Scatter(
+                x=frame.index,
+                y=mean + width * std,
+                name=f"+{width:g}σ",
+                line=dict(width=0),
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=frame.index,
+                y=mean - width * std,
+                name=f"−{width:g}σ",
+                fill="tonexty",
+                fillcolor=f"rgba(31,75,58,{opacity})",
+                line=dict(width=0),
+                showlegend=width == 2.0,
+                legendgroup="band",
+                hoverinfo="skip",
+            )
+        )
     fig.add_trace(
         go.Scatter(
             x=frame.index,
-            y=frame["spread"],
+            y=mean,
+            name="滚动均值",
+            line=dict(color=SLATE, width=1, dash="dot"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=frame.index,
+            y=spread,
             name="交易价差",
             line=dict(color=NAVY, width=1.6),
         )
     )
-    fig.add_trace(
-        go.Scatter(
-            x=frame.index,
-            y=frame["spread_beta1"],
-            name="β = 1",
-            line=dict(color=RUST, width=1.1, dash="dot"),
+    _trade_markers(fig, frame, spread)
+    return _layout(fig, "价差与开平仓", height=420)
+
+
+def _trade_markers(fig: go.Figure, frame: pd.DataFrame, series: pd.Series) -> None:
+    if "position" not in frame.columns:
+        return
+    position = frame["position"].fillna(0)
+    previous = position.shift(1).fillna(0)
+    entries = frame.loc[(position != 0) & (previous == 0)]
+    exits = frame.loc[(position == 0) & (previous != 0)]
+    if len(entries):
+        fig.add_trace(
+            go.Scatter(
+                x=entries.index,
+                y=series.reindex(entries.index),
+                name="开仓",
+                mode="markers",
+                marker=dict(symbol="triangle-up", size=9, color=GREEN),
+            )
         )
-    )
-    return _layout(fig, "价差")
+    if len(exits):
+        fig.add_trace(
+            go.Scatter(
+                x=exits.index,
+                y=series.reindex(exits.index),
+                name="平仓",
+                mode="markers",
+                marker=dict(symbol="x", size=8, color=RED),
+            )
+        )
 
 
 def hedge_figure(frame: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(x=frame.index, y=frame["beta"], name="动态 beta", line=dict(color=NAVY, width=1.5))
-    )
+    if "beta_rolling" in frame.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=frame.index,
+                y=frame["beta_rolling"],
+                name="滚动 OLS",
+                line=dict(color=NAVY, width=1.6),
+            )
+        )
+    if "beta_kalman" in frame.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=frame.index,
+                y=frame["beta_kalman"],
+                name="卡尔曼",
+                line=dict(color=RUST, width=1.5),
+            )
+        )
+    if "beta_rolling" not in frame.columns and "beta_kalman" not in frame.columns:
+        fig.add_trace(
+            go.Scatter(x=frame.index, y=frame["beta"], name="动态 beta", line=dict(color=NAVY, width=1.5))
+        )
     fig.add_hline(y=1, line_dash="dot", line_color="#d9d0c3")
-    return _layout(fig, "动态对冲比率")
+    return _layout(fig, "滚动 OLS 与卡尔曼 β")
 
 
 def equity_figure(frame: pd.DataFrame) -> go.Figure:
@@ -212,8 +288,10 @@ def equity_figure(frame: pd.DataFrame) -> go.Figure:
     ret_h = frame["ret_h"].fillna(0.0)
     bh_a = (1.0 + ret_a).cumprod()
     bh_h = (1.0 + ret_h).cumprod()
+    bh_eq = (1.0 + 0.5 * ret_a + 0.5 * ret_h).cumprod()
     bh_a = bh_a / bh_a.iloc[0]
     bh_h = bh_h / bh_h.iloc[0]
+    bh_eq = bh_eq / bh_eq.iloc[0]
     fig = make_subplots(
         rows=2,
         cols=1,
@@ -245,6 +323,16 @@ def equity_figure(frame: pd.DataFrame) -> go.Figure:
             y=bh_h,
             name="只持有 H（人民币）",
             line=dict(color=RUST, width=1, dash="dot"),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=frame.index,
+            y=bh_eq,
+            name="等权 A+H",
+            line=dict(color=GOLD, width=1.2, dash="dash"),
         ),
         row=1,
         col=1,
@@ -304,3 +392,18 @@ def northbound_figure(frame: pd.DataFrame) -> go.Figure:
     fig.update_yaxes(title="Δ价差", secondary_y=False)
     fig.update_yaxes(title="亿元", secondary_y=True)
     return _layout(fig, "价差变化与北向资金净买入")
+
+
+def rolling_p_figure(pvalues: pd.Series) -> go.Figure:
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=pvalues.index,
+            y=pvalues,
+            name="滚动 EG p 值",
+            line=dict(color=NAVY, width=1.5),
+        )
+    )
+    fig.add_hline(y=0.05, line_dash="dot", line_color=RED)
+    fig.update_yaxes(range=[0, 1])
+    return _layout(fig, "滚动 Engle–Granger p 值", height=320)

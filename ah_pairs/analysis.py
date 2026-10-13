@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 
@@ -10,6 +12,8 @@ from ah_pairs.cointegration import (
     engle_granger,
     johansen_test,
     ou_half_life,
+    residual_adf,
+    rolling_eg_pvalue,
     select_vecm_lags,
 )
 from ah_pairs.hedge import kalman_hedge, rolling_ols, rolling_zscore
@@ -24,16 +28,20 @@ def warmup_start(start, params: StrategyParams) -> pd.Timestamp:
 def build_signals(prices: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
     y = prices["log_a"].to_numpy(dtype=float)
     x = prices["log_h"].to_numpy(dtype=float)
+    alpha_roll, beta_roll = rolling_ols(y, x, params.hedge_window)
+    alpha_kalman, beta_kalman = kalman_hedge(
+        y, x, delta=params.kalman_delta, init_window=params.hedge_window
+    )
     if params.hedge == "kalman":
-        alpha, beta = kalman_hedge(
-            y, x, delta=params.kalman_delta, init_window=params.hedge_window
-        )
+        alpha, beta = alpha_kalman, beta_kalman
     else:
-        alpha, beta = rolling_ols(y, x, params.hedge_window)
+        alpha, beta = alpha_roll, beta_roll
     spread = y - alpha - beta * x
     out = prices.copy()
     out["alpha"] = alpha
     out["beta"] = beta
+    out["beta_rolling"] = beta_roll
+    out["beta_kalman"] = beta_kalman
     out["spread"] = spread
     out["z"] = rolling_zscore(spread, params.z_window)
     out["spread_beta1"] = prices["log_a"] - prices["log_h"]
@@ -45,6 +53,7 @@ def analyze_frame(
     params: StrategyParams,
     eval_start=None,
     northbound: pd.Series | None = None,
+    full_diagnostics: bool = True,
 ) -> dict:
     """prices 可以包含评估区间之前的预热样本。
 
@@ -66,6 +75,12 @@ def analyze_frame(
         )
 
     eg = engle_granger(view["log_a"], view["log_h"])
+    try:
+        adf = residual_adf(eg["resid"])
+    except Exception as exc:
+        adf = {"ok": False, "message": str(exc)}
+    else:
+        adf["ok"] = True
     view["static_resid"] = eg["resid"].reindex(view.index)
     try:
         lags = select_vecm_lags(view["log_a"], view["log_h"])
@@ -87,21 +102,65 @@ def analyze_frame(
         north = describe_northbound(result["spread"], northbound)
         result["northbound"] = northbound.reindex(result.index)
 
+    if full_diagnostics:
+        try:
+            rolling_p = rolling_eg_pvalue(view["log_a"], view["log_h"], window=252, step=42)
+        except Exception:
+            rolling_p = pd.Series(dtype=float, name="eg_pvalue")
+        sensitivity = entry_sensitivity(result, params)
+    else:
+        rolling_p = pd.Series(dtype=float, name="eg_pvalue")
+        sensitivity = pd.DataFrame()
+
     return {
         "frame": result,
         "trades": trades,
         "stats": stats,
         "eg": {k: v for k, v in eg.items() if k != "resid"},
+        "residual_adf": adf,
         "half_life_static": static_hl,
         "half_life_traded": traded_hl,
         "johansen": johansen,
         "northbound": north,
+        "rolling_p": rolling_p,
+        "sensitivity": sensitivity,
         "params": params,
     }
 
 
+def entry_sensitivity(
+    frame: pd.DataFrame,
+    params: StrategyParams,
+    entries: tuple[float, ...] = (1.0, 1.5, 2.0, 2.5, 3.0),
+) -> pd.DataFrame:
+    """同一条 z 和 beta 上，只改开仓阈值，比较夏普和回撤。"""
+    rows = []
+    for entry in entries:
+        if entry <= params.exit_z:
+            continue
+        stop = params.stop_z
+        if stop != 0 and stop <= entry:
+            stop = round(entry + 0.5, 1)
+        try:
+            trial = replace(params, entry_z=float(entry), stop_z=float(stop))
+            _path, _trades, stats = run_backtest(frame, trial)
+        except Exception:
+            continue
+        rows.append(
+            {
+                "entry_z": float(entry),
+                "sharpe": stats["sharpe"],
+                "max_drawdown": stats["max_drawdown"],
+                "total_return": stats["total_return"],
+                "n_trades": stats["n_trades"],
+                "current": abs(float(entry) - float(params.entry_z)) < 1e-9,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def screen_one(prices: pd.DataFrame, params: StrategyParams, eval_start) -> dict:
-    result = analyze_frame(prices, params, eval_start=eval_start)
+    result = analyze_frame(prices, params, eval_start=eval_start, full_diagnostics=False)
     eg = result["eg"]
     hl = result["half_life_static"]
     stats = result["stats"]

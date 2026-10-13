@@ -6,8 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from ah_pairs.analysis import entry_sensitivity
 from ah_pairs.backtest import StrategyParams, run_backtest
-from ah_pairs.cointegration import engle_granger, ou_half_life
+from ah_pairs.cointegration import engle_granger, ou_half_life, residual_adf
 from ah_pairs.costs import CostParams, a_share_stamp, h_share_stamp, leg_turnover_cost
 from ah_pairs.hedge import kalman_hedge, rolling_ols
 from ah_pairs.universe import a_to_yahoo, h_to_yahoo, load_universe
@@ -104,6 +105,24 @@ def test_half_life_and_engle_granger_recover_the_process():
     assert eg["pvalue"] < 0.05
     assert eg["beta"] == pytest.approx(1.1, abs=0.05)
     assert eg["reject_5"]
+
+
+def test_residual_adf_is_separate_from_the_cointegration_pvalue():
+    y, x = _cointegrated_pair()
+    eg = engle_granger(y, x)
+    adf = residual_adf(eg["resid"])
+    assert adf["adf_pvalue"] < 0.05
+    assert "不能代替" in adf["note"]
+
+
+def test_entry_grid_marks_the_threshold_in_use():
+    z = np.concatenate([np.zeros(2), np.full(6, -2.4), np.zeros(4)])
+    frame = _book(z, np.ones(len(z)))
+    params = _params(fill="same_close", entry_z=2.0, exit_z=0.5, stop_z=0.0)
+    table = entry_sensitivity(frame, params, entries=(1.5, 2.0, 2.5))
+    assert list(table["entry_z"]) == [1.5, 2.0, 2.5]
+    assert bool(table.loc[table["entry_z"] == 2.0, "current"].iloc[0])
+    assert not bool(table.loc[table["entry_z"] == 1.5, "current"].iloc[0])
 
 
 def test_hedge_ratio_ignores_the_future():

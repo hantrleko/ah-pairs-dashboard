@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from statsmodels.tsa.stattools import coint
+from statsmodels.tsa.stattools import adfuller, coint
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
 
 
@@ -42,6 +42,25 @@ def engle_granger(y, x, trend: str = "c") -> dict:
         "crit_10": float(crit_arr[2]),
         "reject_5": bool(pvalue < 0.05),
         "resid": resid,
+    }
+
+
+def residual_adf(resid) -> dict:
+    """对协整回归残差再做一次普通 ADF。
+
+    残差是用同一段样本估计出来的，这个 p 值会偏小，不能代替 Engle-Granger 的 p 值。
+    """
+    series = pd.Series(resid, dtype=float).dropna()
+    if len(series) < 40:
+        raise ValueError("残差 ADF 至少需要 40 个观测")
+    stat, pvalue, usedlag, nobs, crit, _ic = adfuller(series.to_numpy(), autolag="aic")
+    return {
+        "adf_stat": float(stat),
+        "adf_pvalue": float(pvalue),
+        "adf_lag": int(usedlag),
+        "adf_nobs": int(nobs),
+        "adf_crit_5": float(crit["5%"]),
+        "note": "普通 ADF。残差来自同一样本的回归，p 值偏乐观，不能代替 Engle-Granger p 值。",
     }
 
 

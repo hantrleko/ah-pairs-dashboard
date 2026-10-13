@@ -10,6 +10,7 @@ from ah_pairs.analysis import analyze_frame, screen_one, warmup_start
 from ah_pairs.backtest import StrategyParams
 from ah_pairs.costs import CostParams
 from ah_pairs.data import load_pair
+from ah_pairs.export import equity_png, metrics_latex, metrics_table, spread_png
 from ah_pairs.northbound import latest_valid, load_northbound
 from ah_pairs.plots import (
     equity_figure,
@@ -17,6 +18,7 @@ from ah_pairs.plots import (
     northbound_figure,
     premium_figure,
     prices_figure,
+    rolling_p_figure,
     signal_figure,
     spread_figure,
     static_resid_figure,
@@ -249,12 +251,23 @@ with st.sidebar:
         row.a_code: f"{row.name}   {row.a_code} / {row.h_code}"
         for row in universe.itertuples(index=False)
     }
-    default_index = int(universe.index[universe["a_code"] == "601318"][0]) if (universe["a_code"] == "601318").any() else 0
+    codes = universe["a_code"].tolist()
+    if "pair_select" not in st.session_state or st.session_state["pair_select"] not in codes:
+        st.session_state["pair_select"] = "601318" if "601318" in codes else codes[0]
+    quick = [("601318", "平安"), ("601398", "工行"), ("600036", "招行"), ("601857", "石油")]
+    left, right = st.columns(2)
+    for column, pairs in ((left, quick[:2]), (right, quick[2:])):
+        with column:
+            for code, name in pairs:
+                if st.button(name, key=f"quick_{code}", use_container_width=True):
+                    st.session_state["pair_select"] = code
+                    st.rerun()
+    st.caption("腾讯没有对应 A 股，不在这张名单里。")
     a_code = st.selectbox(
         "公司",
-        universe["a_code"].tolist(),
-        index=default_index,
+        codes,
         format_func=lambda code: labels.get(code, code),
+        key="pair_select",
     )
     picked = universe.loc[universe["a_code"] == a_code].iloc[0]
     date_range = st.date_input(
@@ -302,7 +315,7 @@ with st.sidebar:
     h_stamp = _bps("H 股印花税（bps，单边，关闭法定档期时使用）", 10.0, "h_stamp")
     a_borrow = st.number_input("A 股融券年化（%）", 0.0, 30.0, 5.0, 0.5) / 100
     h_borrow = st.number_input("H 股融券年化（%）", 0.0, 30.0, 2.0, 0.5) / 100
-    slippage = _bps("滑点（bps，单边）", 0.0, "slip")
+    slippage = _bps("汇率与成交滑点（bps，单边）", 0.0, "slip")
     reload_prices = st.button("重新下载这对行情")
 
 try:
@@ -371,9 +384,9 @@ st.markdown(
     f"""
 <div class="mast">
   <div>
-    <p class="kicker">A + H 价差</p>
+    <p class="kicker">V0.2 · A + H 价差</p>
     <h1>{picked["name"]}</h1>
-    <p class="meta">{picked.a_code} · {picked.h_code} · {frame.index.min().date()} — {frame.index.max().date()} · {len(frame)} 个同时开市日</p>
+    <p class="meta">{picked.a_code} · {picked.h_code} · 最近交易日 {frame.index.max().date()} · {frame.index.min().date()} — {frame.index.max().date()} · {len(frame)} 个同时开市日。A、H 节假日不同，只保留两边都开市的日期。</p>
   </div>
   <div class="pill"><span>最近溢价</span><strong>{_pct(premium_last)}</strong></div>
 </div>
@@ -408,7 +421,7 @@ with tab_px:
     left, right = st.columns(2)
     left.plotly_chart(premium_figure(frame), use_container_width=True)
     right.plotly_chart(hedge_figure(frame), use_container_width=True)
-    st.plotly_chart(spread_figure(frame), use_container_width=True)
+    st.plotly_chart(spread_figure(frame, params.z_window), use_container_width=True)
     st.plotly_chart(signal_figure(frame, params.entry_z, params.exit_z, params.stop_z), use_container_width=True)
 
 with tab_coint:
@@ -422,7 +435,7 @@ with tab_coint:
         st.dataframe(
             pd.DataFrame(
                 {
-                    "项目": ["重叠天数", "α", "β", "R²", "EG t 统计量", "5% 临界值", "p 值", "φ", "κ（每日）", "半衰期（交易日）", "长期均值"],
+                    "项目": ["重叠天数", "α", "β", "R²", "EG t 统计量", "5% 临界值", "EG p 值", "残差 ADF 统计量", "残差 ADF p 值", "φ", "κ（每日）", "半衰期（交易日）", "长期均值"],
                     "数值": [
                         f"{eg['nobs']}",
                         _num(eg["alpha"], 3),
@@ -431,6 +444,8 @@ with tab_coint:
                         _num(eg["t_stat"], 2),
                         _num(eg["crit_5"], 2),
                         _pval(eg["pvalue"]),
+                        _num(result["residual_adf"].get("adf_stat"), 2),
+                        _pval(result["residual_adf"].get("adf_pvalue")),
                         _num(static_hl["phi"], 3),
                         _num(static_hl["kappa"], 4),
                         _half_life_text(static_hl),
@@ -441,6 +456,13 @@ with tab_coint:
             hide_index=True,
             use_container_width=True,
         )
+        st.caption(
+            f"半衰期来自 AR(1)：价差_t = c + φ × 价差_(t−1) + e。φ = {_num(static_hl.get('phi'), 3)}，"
+            "半衰期 = −ln(2) / ln(φ)。φ 越接近 1，回复越慢。"
+        )
+        adf_note = (result.get("residual_adf") or {}).get("note")
+        if adf_note:
+            st.caption(adf_note)
     with d2:
         st.markdown("**Johansen 迹检验**")
         if not johansen.get("ok"):
@@ -480,6 +502,12 @@ with tab_coint:
             use_container_width=True,
         )
         st.caption("这一行是因果价差在评估区间里的 AR(1)，和左边的全样本残差不是同一条序列。")
+    rolling_p = result.get("rolling_p")
+    if rolling_p is not None and len(rolling_p):
+        st.plotly_chart(rolling_p_figure(rolling_p), use_container_width=True)
+        st.caption("每个点用它之前 252 个同时开市日做 Engle–Granger，大约每 42 个交易日算一次。虚线是 0.05。")
+    else:
+        st.caption("评估区间不足 252 个交易日，没有画滚动协整 p 值。")
     st.plotly_chart(static_resid_figure(frame), use_container_width=True)
 
 with tab_bt:
@@ -506,8 +534,34 @@ with tab_bt:
     short_text = "允许做空 A 股，并扣除侧栏里的融券年化。" if params.allow_short_a else "不允许做空 A 股：价差偏高时策略空仓，只在 A 股相对便宜时买 A、卖 H。"
     st.caption(
         f"{frame.index.min().date()} 至 {frame.index.max().date()}，{stats['n_days']} 个同时开市日。"
-        f"夏普按 252 天年化，无风险利率按 0。{fill_text}{short_text}"
+        f"夏普按 252 天年化，无风险利率按 0。成本含侧栏里的佣金、法定印花税、融券费和滑点。{fill_text}{short_text}"
+        " 净值图里的只持有 A、只持有 H 和等权 A+H 是对照，不是这个策略的基准。"
     )
+    sensitivity = result.get("sensitivity")
+    if isinstance(sensitivity, pd.DataFrame) and not sensitivity.empty:
+        st.markdown("**开仓阈值敏感性**")
+        show_s = sensitivity.copy()
+        show_s["当前"] = show_s["current"].map({True: "是", False: ""})
+        st.dataframe(
+            show_s.rename(
+                columns={
+                    "entry_z": "开仓 |z|",
+                    "sharpe": "夏普",
+                    "max_drawdown": "最大回撤",
+                    "total_return": "净收益",
+                    "n_trades": "交易次数",
+                }
+            )[["开仓 |z|", "夏普", "最大回撤", "净收益", "交易次数", "当前"]],
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "开仓 |z|": st.column_config.NumberColumn(format="%.1f"),
+                "夏普": st.column_config.NumberColumn(format="%.2f"),
+                "最大回撤": st.column_config.NumberColumn(format="%.2%"),
+                "净收益": st.column_config.NumberColumn(format="%.2%"),
+            },
+        )
+        st.caption("其他参数保持侧栏不变，只改开仓 |z|。这张表会把同一段样本试很多次，不能当成独立样本外结果。")
     trades = result["trades"].copy()
     if trades.empty:
         st.info("这个参数组合在评估区间里没有开仓。")
@@ -535,12 +589,33 @@ with tab_bt:
             },
         )
     export = frame.reset_index()
-    st.download_button(
-        "下载日频结果 CSV",
+    summary = metrics_table(result, picked["name"], picked.a_code, picked.h_code)
+    latex = metrics_latex(summary)
+    spread_bytes = spread_png(frame, params.z_window)
+    equity_bytes = equity_png(frame)
+    d1, d2, d3 = st.columns(3)
+    d1.download_button(
+        "指标 CSV",
+        summary.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"{picked.a_code}_metrics.csv",
+        mime="text/csv",
+    )
+    d2.download_button(
+        "指标 LaTeX",
+        latex.encode("utf-8"),
+        file_name=f"{picked.a_code}_metrics.tex",
+        mime="text/plain",
+    )
+    d3.download_button(
+        "日频结果 CSV",
         export.to_csv(index=False).encode("utf-8-sig"),
         file_name=f"{picked.a_code}_{picked.h_code}_daily.csv",
         mime="text/csv",
     )
+    if spread_bytes and equity_bytes:
+        p1, p2 = st.columns(2)
+        p1.download_button("价差图 PNG", spread_bytes, file_name=f"{picked.a_code}_spread.png", mime="image/png")
+        p2.download_button("净值图 PNG", equity_bytes, file_name=f"{picked.a_code}_equity.png", mime="image/png")
 
 with tab_flow:
     flow = result["northbound"]
@@ -625,16 +700,18 @@ with tab_note:
         """
 **价格。** A 股、H 股用复权收盘价。H 股乘以港元兑人民币 `HKDCNY`，再和 A 股取对数。两边节假日不同，只保留同时有价格的日期，股价不向前填充。汇率最多向前填 5 个交易日。
 
-**协整。** 全样本 Engle–Granger 是 `log A = α + β log H + e`。p 值来自协整分布。Johansen 检验含常数项，差分滞后按水平 VAR 的 AIC 选取。半衰期来自 AR(1)：`0 < φ < 1` 时，半衰期 `= −ln 2 / ln φ`。φ 不在这个区间里就记为不收敛。
+**协整。** 全样本 Engle–Granger 是 `log A = α + β log H + e`。报告的 EG p 值来自协整分布。残差上的普通 ADF 只是补充：残差是同一段样本估出来的，这个 p 值会偏小，不能拿来代替 EG p 值。Johansen 迹检验含常数项。半衰期来自 AR(1)，`半衰期 = −ln 2 / ln φ`。滚动 p 值每个窗口只用当时已经过去的 252 个交易日。
 
-**交易。** 动态 β 只用当天以前的价格。z 分数用含当天在内的滚动均值和标准差，成交放在信号之后，所以不会用到未来价差。默认在下一个同时开市日的收盘成交，新仓位从成交日收盘之后才开始计算收益。一天只有一次决策。A 股因此不会在买入的同一根日 K 里卖出。
+**交易。** 回测用的 β 是滚动 OLS 或卡尔曼滤波，只用当天以前的价格。图上两条 β 都会画出来，仓位只用侧栏选中的那一条。z 分数用含当天在内的滚动均值和标准差，成交放在信号之后。默认下一个同时开市日收盘才成交，所以 A 股不会在买入的同一根日 K 里卖出。
 
-**权重。** 做多价差是买 A、按 β 卖 H，`|w_A| + |w_H| = 1`。持仓期间把开仓时的 β 锁住，只有 β 的相对变化超过再平衡带才调整。β 不为正时默认空仓。
+**成本和日历。** 佣金、法定印花税、融券费、汇率与成交滑点都在侧栏里。印花税按日期分档。A、H 节假日不一致的日期整行删掉，不用前值填股价。
 
-**成本。** 法定印花税：A 股 2008-09-19 起卖方单边，2023-08-28 起卖方 0.05%；更早的双边税率也写进了档期。H 股 2021-08-01 至 2023-11-16 为 0.13%，其余 0.10%，买卖都收。佣金和融券费在侧栏里改。成本按净值比例计算，没有五元最低佣金。
+**前视和多重比较。** 全样本 β、EG 和 Johansen 用了评估区间里的全部价格，只能当描述。交易信号本身不用未来价格。开仓阈值敏感性、以及「一组对照」里按 p 值排序，都是同一段样本上的多次试验，最小的 p 值或最好的夏普会被挑得偏乐观。
+
+**不要读成什么。** 样本内协整不保证以后还在。A/H 不能转换，溢价可以在高位停很多年。做空 A 股取决于能不能借到券。腾讯没有 A 股，不在这个股票池里。
+
+**权重。** 做多价差是买 A、按 β 卖 H，`|w_A| + |w_H| = 1`。持仓期间把开仓时的 β 锁住，只有 β 的相对变化超过再平衡带才调整。
 
 **北向。** 东财汇总的北向净买入，单位亿元。2024 年 8 月之后日频流向停止披露。回归只描述价差变化和全市场北向是否同一天同向。
-
-**不要读成什么。** 样本内协整不保证以后还在。A/H 不能转换，溢价可以在高位停很多年。做空 A 股取决于能不能借到券，这个开关建议和允许做空的结果一起看。
         """
     )
