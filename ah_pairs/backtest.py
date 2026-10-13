@@ -367,3 +367,60 @@ def _performance_stats(
         "start": frame.index.min(),
         "end": frame.index.max(),
     }
+
+
+def later_window_performance(frame: pd.DataFrame, trades: pd.DataFrame) -> dict:
+    """后半段沿用已经算好的收益，不重新选择参数。"""
+    if "ret_strat" not in frame.columns or len(frame) < 40:
+        return {"ok": False}
+    part = frame.iloc[len(frame) // 2 :].copy()
+    rets = part["ret_strat"].fillna(0.0)
+    equity = (1.0 + rets).cumprod()
+    end_equity = float(equity.iloc[-1])
+    years = len(part) / 252.0
+    cagr = float(end_equity ** (1.0 / years) - 1.0) if years > 0 and end_equity > 0 else np.nan
+    start = part.index.min()
+    closed = trades[trades["closed"]] if len(trades) else trades
+    if len(closed):
+        closed = closed[pd.to_datetime(closed["entry_date"]) >= start]
+    return {
+        "ok": True,
+        "start": start,
+        "end": part.index.max(),
+        "n_days": int(len(part)),
+        "total_return": float(end_equity - 1.0),
+        "cagr": cagr,
+        "n_trades": int(len(closed)),
+    }
+
+
+def contrast_costs(frame: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
+    """同一条信号下，当前成本、零成本和滑点再加 10 个基点。"""
+    from dataclasses import replace
+
+    zero = replace(
+        params.costs,
+        a_commission=0.0,
+        h_commission=0.0,
+        a_borrow_annual=0.0,
+        h_borrow_annual=0.0,
+        use_statutory_stamp=False,
+        a_stamp_sell=0.0,
+        h_stamp=0.0,
+        slippage=0.0,
+    )
+    slip = replace(params.costs, slippage=float(params.costs.slippage) + 0.001)
+    rows = []
+    for name, costs in (("当前成本", params.costs), ("不计成本", zero), ("滑点再加 10 bps", slip)):
+        _work, _trades, stats = run_backtest(frame, replace(params, costs=costs))
+        rows.append(
+            {
+                "情形": name,
+                "净收益": stats["total_return"],
+                "夏普": stats["sharpe"],
+                "交易次数": stats["n_trades"],
+                "成本合计": stats["total_cost"],
+                "融券费合计": stats["total_borrow"],
+            }
+        )
+    return pd.DataFrame(rows)

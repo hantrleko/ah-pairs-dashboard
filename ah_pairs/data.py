@@ -180,18 +180,21 @@ def load_pair(
         h_ticker, cache_dir, kind="h", code=h_code, refresh=refresh
     )
     fx, fx_src = get_fx(cache_dir, refresh=refresh)
-    if a_src != "cache":
-        warnings.append(f"A 股来源：{a_src}")
-    if h_src != "cache":
-        warnings.append(f"H 股来源：{h_src}")
-    if fx_src != "cache":
-        warnings.append(f"汇率来源：{fx_src}")
+    warnings.append(f"A股来源：{a_src}")
+    warnings.append(f"H股来源：{h_src}")
+    warnings.append(f"汇率来源：{fx_src}")
+    if "失败" in a_src or "失败" in h_src or "失败" in fx_src:
+        warnings.append("有一条行情下载失败，图上用的是本地缓存。")
     if "eastmoney" in {a_src, h_src} or "沿用" in a_src or "沿用" in h_src:
         warnings.append("两条腿的复权来源可能不一致，价差水平要谨慎解读。")
 
     px = pd.concat({"a_cny": a_px, "h_hkd": h_px}, axis=1, join="inner").sort_index()
     px = px[(px["a_cny"] > 0) & (px["h_hkd"] > 0)]
-    fx_aligned = fx.reindex(px.index).ffill(limit=5)
+    fx_raw = fx.reindex(px.index)
+    fx_aligned = fx_raw.ffill(limit=5)
+    lagged = int((fx_raw.isna() & fx_aligned.notna()).sum())
+    if lagged:
+        warnings.append(f"汇率有 {lagged} 天沿用了此前最多 5 个交易日的牌价。")
     px["fx"] = fx_aligned
     px = px.dropna()
     start_ts = pd.Timestamp(start).normalize()

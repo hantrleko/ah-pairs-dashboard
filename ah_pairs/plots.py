@@ -312,7 +312,14 @@ def _sigma_bands(fig: go.Figure, index, mean: pd.Series, std: pd.Series, row: in
         )
 
 
-def core_signal_figure(frame: pd.DataFrame, z_window: int, entry: float, exit_: float, stop: float) -> go.Figure:
+def core_signal_figure(
+    frame: pd.DataFrame,
+    z_window: int,
+    entry: float,
+    exit_: float,
+    stop: float,
+    show_marks: bool = True,
+) -> go.Figure:
     """价差、σ 带、开平仓和 z-score 放在同一张图里。"""
     spread = frame["spread"]
     mean = spread.rolling(z_window, min_periods=z_window).mean()
@@ -336,7 +343,8 @@ def core_signal_figure(frame: pd.DataFrame, z_window: int, entry: float, exit_: 
         row=1,
         col=1,
     )
-    _trade_markers(fig, frame, spread, row=1)
+    if show_marks:
+        _trade_markers(fig, frame, spread, row=1)
     fig.add_trace(
         go.Scatter(x=frame.index, y=frame["z"], name="z-score", line=dict(color=H_ORANGE, width=1.4)),
         row=2,
@@ -525,8 +533,8 @@ def northbound_figure(frame: pd.DataFrame) -> go.Figure:
             ),
             secondary_y=True,
         )
-    fig.update_yaxes(title="Δ价差", secondary_y=False)
-    fig.update_yaxes(title="亿元", secondary_y=True)
+    fig.update_yaxes(title="对数价差日变化", secondary_y=False)
+    fig.update_yaxes(title="北向净买入（亿元）", secondary_y=True)
     return _layout(fig, "价差变化与北向资金净买入")
 
 

@@ -9,10 +9,11 @@ import pandas as pd
 import streamlit as st
 
 from ah_pairs.analysis import analyze_frame, pick_lowest_p, screen_one, warmup_start
-from ah_pairs.backtest import StrategyParams
+from ah_pairs.backtest import StrategyParams, contrast_costs, later_window_performance
 from ah_pairs.costs import CostParams
 from ah_pairs.data import load_pair
 from ah_pairs.export import equity_png, metrics_latex, metrics_table, spread_png
+from ah_pairs.freshness import cache_written_at, northbound_stops_before, price_is_stale
 from ah_pairs.northbound import latest_valid, load_northbound
 from ah_pairs.plots import (
     core_signal_figure,
@@ -209,11 +210,41 @@ div[data-testid="stCaptionContainer"] p { color: #5a6a7a; font-size: 0.82rem; }
 }
 .lesson strong { display: block; color: #1f4e79; margin-bottom: 0.35rem; font-size: 0.95rem; }
 .lesson p { margin: 0; color: #3d4c5c; font-size: 0.92rem; line-height: 1.6; }
+.toolbar, .health {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  align-items: baseline;
+  margin: 0.15rem 0 0.55rem;
+  color: #3d4c5c;
+  font-size: 0.86rem;
+}
+.health.warn {
+  display: block;
+  background: #fff6f2;
+  border: 1px solid #e7c3b2;
+  border-left: 3px solid #b4532a;
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  color: #7a3418;
+}
+.tag {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: #e7f2ea;
+  color: #1d6b45;
+  font-size: 0.75rem;
+}
+.tag.bad { background: #f8e8e4; color: #9b3a3a; }
 @media (max-width: 900px) {
   .kpi-row, .kpi-row.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lesson { grid-template-columns: 1fr; }
   .mast { flex-direction: column; align-items: flex-start; }
   .brand h1 { font-size: 1.25rem; }
+  .stTabs [data-baseweb="tab-list"] { flex-wrap: wrap; overflow-x: visible; }
+  .stTabs [data-baseweb="tab"] { padding: 0.4rem 0.5rem; font-size: 0.82rem; }
+  [data-testid="stRadio"] [role="radiogroup"] { flex-wrap: wrap; }
 }
 </style>
     """,
@@ -290,7 +321,7 @@ with title_col:
     st.markdown(
         """
 <div class="brand">
-  <p class="kicker">V0.8 · EUGENE FINANCE</p>
+  <p class="kicker">V0.9 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H 股协整配对交易研究看板</h1>
   <p class="subtitle">Interactive Cointegration &amp; Dynamic Pairs Trading Lab · 仅供学习与研究，不构成投资建议</p>
 </div>
@@ -326,7 +357,7 @@ with st.sidebar:
                 if st.button(name, key=f"quick_{code}", use_container_width=True):
                     st.session_state["pair_select"] = code
                     st.rerun()
-    st.caption("这四只谁更接近协整，用「先看懂」里的比较按钮按当前区间重算。腾讯没有对应 A 股。")
+    st.caption("这四个按钮和下面的公司名单是同一个选择。点「平安」就是选中中国平安。腾讯没有对应 A 股。谁更接近协整，用「摘要」里的比较。")
     a_code = st.selectbox(
         "公司",
         codes,
@@ -384,15 +415,18 @@ with st.sidebar:
     st.markdown("**开平仓**")
     entry_z = st.slider("开仓 |z|", 1.0, 3.5, 2.0, 0.1, help="|z| 超过这里才开仓。越大，交易越少。")
     exit_z = st.slider("平仓 |z|", 0.0, 1.5, 0.5, 0.1, help="|z| 回到这里以内就平仓，必须小于开仓阈值。")
-    stop_z = st.slider("止损 |z|（0 表示不用）", 0.0, 6.0, 4.0, 0.1, help="|z| 继续扩大到这里就止损。0 表示不止损。")
-    beta_band = st.slider(
-        "β 再平衡带",
-        0.0,
-        0.50,
-        0.10,
-        0.01,
-        help="持仓期间 β 相对开仓时变化超过这个比例，才调整对冲，避免每天付印花税。",
-    )
+    with st.expander("进阶参数", expanded=False):
+        stop_z = st.slider("止损 |z|（0 表示不用）", 0.0, 6.0, 4.0, 0.1, help="|z| 继续扩大到这里就止损。0 表示不止损。")
+        beta_band = st.slider(
+            "β 再平衡带",
+            0.0,
+            0.50,
+            0.10,
+            0.01,
+            help="持仓期间 β 相对开仓时变化超过这个比例，才调整对冲，避免每天付印花税。",
+        )
+        allow_short_a = st.checkbox("允许做空 A 股", value=True, help="关掉后，A 股偏贵时不交易，只在 A 股相对便宜时买 A、卖 H。")
+        require_positive_beta = st.checkbox("β 不为正时空仓", value=True, help="对冲比率不为正时不建仓。")
     st.markdown("**成交与成本**")
     fill_label = st.radio(
         "T+1 约束",
@@ -401,8 +435,6 @@ with st.sidebar:
         help="A 股当天买入不能当天卖。选「已考虑」时，信号出现后的下一个同时开市日才成交。",
     )
     fill = "next_close" if fill_label.startswith("已考虑") else "same_close"
-    allow_short_a = st.checkbox("允许做空 A 股", value=True, help="关掉后，A 股偏贵时不交易，只在 A 股相对便宜时买 A、卖 H。")
-    require_positive_beta = st.checkbox("β 不为正时空仓", value=True, help="对冲比率不为正时不建仓。")
     include_costs = st.checkbox(
         "计入交易成本（A 股印花税和佣金、H 股费用）",
         value=True,
@@ -483,37 +515,94 @@ johansen = result["johansen"]
 
 premium_now = frame["premium"].dropna()
 premium_last = float(premium_now.iloc[-1]) if len(premium_now) else np.nan
+sources = {}
+extra_notes = []
+for note in notes:
+    if note.startswith("A股来源："):
+        sources["a"] = note.split("：", 1)[1]
+    elif note.startswith("H股来源："):
+        sources["h"] = note.split("：", 1)[1]
+    elif note.startswith("汇率来源："):
+        sources["fx"] = note.split("：", 1)[1]
+    else:
+        extra_notes.append(note)
+last_px = frame.index.max()
+price_stale = price_is_stale(last_px, end_day, pd.Timestamp.today())
+nb_last = latest_valid(north) if north is not None else None
+nb_stale = northbound_stops_before(last_px, nb_last)
+nb_text = "没有载入" if nb_last is None else str(pd.Timestamp(nb_last).date())
+cache_stamp = cache_written_at(picked.a_code, picked.h_code) or "无本地缓存"
+price_tag = '<span class="tag bad">行情偏旧</span>' if price_stale else '<span class="tag">行情及时</span>'
+nb_tag = '<span class="tag bad">北向已停止披露</span>' if nb_stale else '<span class="tag">北向覆盖到行情截止</span>'
 st.markdown(
     f"""
 <div class="mast">
   <div>
-    <p class="kicker">V0.8 · 这一对</p>
+    <p class="kicker">V0.9 · 这一对</p>
     <p class="pair-name">{picked["name"]}</p>
-    <p class="meta">{picked.a_code} · {picked.h_code} · 最近交易日 {frame.index.max().date()} · {frame.index.min().date()} — {frame.index.max().date()} · {len(frame)} 个同时开市日。A、H 节假日不同，只保留两边都开市的日期。</p>
+    <p class="meta">{picked.a_code} · {picked.h_code} · {len(frame)} 个同时开市日。停牌或只有一边开市的日期已去掉，不在图上。</p>
   </div>
   <div class="pill"><span>最近溢价</span><strong>{_pct(premium_last)}</strong></div>
 </div>
+<div class="toolbar">
+  <strong>{picked["name"]}</strong>
+  <span>评估 {start_day} — {end_day}</span>
+  <span>A 股 {sources.get("a", "—")} · H 股 {sources.get("h", "—")} · 汇率 {sources.get("fx", "—")}</span>
+  <span>行情 {frame.index.min().date()} — {last_px.date()}</span>
+  {price_tag}
+  <span>北向截至 {nb_text}</span>
+  {nb_tag}
+  <span>缓存写入 {cache_stamp}</span>
+</div>
     """,
+    unsafe_allow_html=True,
+)
+if nb_stale:
+    st.markdown(
+        f'<p class="health warn">北向资金是沪深港通两市合计净买入，不是 {picked["name"]} 自己的持仓。'
+        f"日频披露止于 {nb_text}，这对股票的行情到 {last_px.date()}。"
+        "对照图只画两边都有数的日期，不把停更之后的价差和空白北向放在一起。</p>",
+        unsafe_allow_html=True,
+    )
+if price_stale:
+    st.markdown(
+        f'<p class="health warn">行情最后一天是 {last_px.date()}，比所选结束日或今天落后超过 7 天。可能是下载失败，或还没收盘。</p>',
+        unsafe_allow_html=True,
+    )
+for note in extra_notes:
+    st.caption(note)
+if eg["reject_5"]:
+    coint_words = f"5% 水平上拒绝无协整（EG p = {_pval(eg['pvalue'])}）"
+    note_class = "note ok"
+else:
+    coint_words = f"目前未能在 5% 水平上拒绝无协整（EG p = {_pval(eg['pvalue'])}）"
+    note_class = "note"
+if not np.isfinite(stats["total_return"]):
+    pay_words = "此区间没有可计算的回测报酬"
+elif stats["total_return"] < 0:
+    pay_words = "此区间回测为负报酬"
+elif stats["total_return"] > 0:
+    pay_words = "此区间回测为正报酬"
+else:
+    pay_words = "此区间回测报酬接近零"
+st.markdown(
+    f'<p class="{note_class}">{coint_words}；{pay_words}。p 值不是获利概率，也不保证价差会收敛。</p>',
     unsafe_allow_html=True,
 )
 _kpis(
     [
         ("EG p 值", _pval(eg["pvalue"]), ""),
-        ("全样本 β", _num(eg["beta"], 3), ""),
-        ("半衰期（日）", _half_life_text(static_hl), ""),
         ("净收益", _pct(stats["total_return"]), _tone(stats["total_return"])),
         ("夏普", _num(stats["sharpe"], 2), _tone(stats["sharpe"])),
         ("最大回撤", _pct(stats["max_drawdown"]), "neg" if np.isfinite(stats["max_drawdown"]) else ""),
-    ]
+    ],
+    columns=4,
 )
-if eg["reject_5"]:
-    verdict = (
-        f'<p class="note ok">Engle–Granger p = {_pval(eg["pvalue"])}，5% 水平上拒绝无协整。'
-        "这是样本内描述，交易用的 β 只用当天以前的价格。</p>"
-    )
-else:
-    verdict = '<p class="note">这段区间没有在 5% 水平上拒绝无协整。回测仍会按规则下单，价差不一定回到均值。</p>'
-st.markdown(verdict, unsafe_allow_html=True)
+st.caption(
+    "EG p 值检验的是「没有协整」这个假设，不是赚钱的概率。"
+    "净收益是期末净值减 1，初始净值按 1 计算，不是一笔货币资金。"
+    "半衰期、残差 ADF 和 Johansen 在「协整诊断」里。"
+)
 prev = st.session_state.get("pair_snapshot")
 if prev and prev.get("code") != picked.a_code:
     st.caption(
@@ -525,8 +614,46 @@ st.session_state["pair_snapshot"] = {
     "name": picked["name"],
     "p": _pval(eg["pvalue"]),
 }
-for note in notes:
-    st.caption(note)
+ctrl_left, ctrl_right = st.columns([3, 1])
+with ctrl_left:
+    chart_span = st.radio(
+        "图表区间",
+        ["近 1 年", "近 3 年", "全期间"],
+        horizontal=True,
+        index=2,
+        key="chart_span",
+        help="只改变图上的日期。检验、回测和稳定性地图仍用左侧的评估区间。",
+    )
+with ctrl_right:
+    show_marks = st.checkbox(
+        "显示开平仓标记",
+        value=True,
+        help="关掉后，价差图不再画三角和叉。持仓的底色还在。",
+    )
+st.caption("图上可以拖出一块区域放大。切换区间或关掉标记，不会改上面的结论。")
+
+
+def _span_frame(data: pd.DataFrame, span: str) -> pd.DataFrame:
+    if data is None or len(data) == 0 or span == "全期间":
+        return data
+    days = 365 if span == "近 1 年" else 365 * 3
+    end = data.index.max()
+    return data.loc[data.index >= end - pd.Timedelta(days=days)]
+
+
+def _show_chart(fig, key: str) -> None:
+    st.plotly_chart(fig, use_container_width=True, key=key, config={"displayModeBar": True})
+
+
+def _meta(source: str, index, extra: str = "") -> str:
+    if index is None or len(index) == 0:
+        return "这段图上没有数据。"
+    start = pd.Timestamp(index.min()).date()
+    end = pd.Timestamp(index.max()).date()
+    return f"来源：{source}。图上 {start} 至 {end}，最后日期 {end}。行情缓存写入 {cache_stamp}。{extra}"
+
+
+view = _span_frame(frame, chart_span)
 
 QUICK_COMPARE = (
     ("601318", "平安"),
@@ -617,11 +744,11 @@ def _render_quick_compare(button_key: str) -> None:
     st.dataframe(view[columns], hide_index=True, use_container_width=True)
 
 
-tab_easy, tab_px, tab_coint, tab_stable, tab_bt, tab_flow, tab_scan, tab_note = st.tabs(
-    ["先看懂", "价差与信号", "协整诊断", "稳定性", "回测", "北向资金", "一组对照", "方法说明"]
+tab_sum, tab_coint, tab_px, tab_stable, tab_bt, tab_note, tab_flow, tab_scan = st.tabs(
+    ["摘要", "协整诊断", "信号", "稳定性", "回测", "方法", "北向资金", "一组对照"]
 )
 
-with tab_easy:
+with tab_sum:
     company = picked["name"]
     p_text = _pval(eg["pvalue"])
     life = _half_life_text(static_hl)
@@ -633,6 +760,18 @@ with tab_easy:
 它们不能互相兑换。所以两边价格不一样是常态，不是捡钱的机会。这个看板只回答一件事：价差偏离之后，历史上有没有回到附近。
         """
     )
+    with st.expander("这几个词是什么意思"):
+        st.markdown(
+            """
+**EG p 值。** Engle–Granger 检验的原假设是「没有协整」。p 值小，是更有理由拒绝这个假设。它不是未来赚钱的概率，也不保证价差会收回来。
+
+**残差 ADF。** 把上面那次回归的残差再做平稳性检验。残差是同一段样本估出来的，这个 p 值会偏乐观，不能代替 EG p 值。
+
+**Johansen 检验。** 两条价格放在一起看有没有协整关系。它和 EG 可以一个拒绝、一个不拒绝。
+
+**半衰期。** 如果价差服从 AR(1)，`半衰期 = −ln(2) / ln φ`。意思是走完一半回家路程大约要多少个交易日。φ 越接近 1，越慢。
+            """
+        )
     st.markdown(
         """
 <div class="lesson">
@@ -680,9 +819,9 @@ with tab_easy:
     st.markdown(
         f"""
 1. 先留在这一页，看懂 {company} 的溢价和 p 值。
-2. 打开「价差与信号」。浅色带是平常波动范围，三角是开仓，叉是平仓。
+2. 打开「信号」。浅色带是平常波动范围。需要看买卖点时，再打开页顶的开平仓标记。
 3. 打开「回测」，看扣掉费用之后的净值。旁边还有只买 A、只买 H、两边各买一半的对照。
-4. 左侧可以换成工行、招行、石油。换完后，页顶会告诉你 p 值变大了还是变小了。想看这个关系换窗口、换子样本之后还在不在，打开「稳定性」。
+4. 左侧四个简称和公司名单是同一个选择。换完后，页顶会告诉你 p 值变大了还是变小了。关系换窗口之后还在不在，打开「稳定性」。
         """
     )
     st.markdown(
@@ -707,21 +846,34 @@ with tab_easy:
     _render_quick_compare("compare_from_easy")
 
 with tab_px:
-    st.plotly_chart(
-        core_signal_figure(frame, params.z_window, params.entry_z, params.exit_z, params.stop_z),
-        use_container_width=True,
-        key="chart_core",
+    _show_chart(
+        core_signal_figure(
+            view,
+            params.z_window,
+            params.entry_z,
+            params.exit_z,
+            params.stop_z,
+            show_marks=show_marks,
+        ),
+        "chart_core",
     )
     st.caption(
-        "上图是交易价差：点线是滚动均值，三条色带从内到外是 ±1σ、±1.5σ、±2σ。"
-        "上三角是买 A、卖 H，下三角是卖 A、买 H，叉是平仓。绿底是做多价差的持仓，红底是做空价差的持仓。"
-        "下图是同一个 z-score：红虚线是开仓，灰点线是平仓，金点线是止损。"
+        _meta(
+            f"A 股 {sources.get('a', '—')}，H 股 {sources.get('h', '—')}，汇率 {sources.get('fx', '—')}",
+            view.index,
+            "上图是交易价差。点线是滚动均值，色带从内到外是 ±1σ、±1.5σ、±2σ。"
+            + ("上三角是买 A 卖 H，下三角是卖 A 买 H，叉是平仓。" if show_marks else "开平仓标记已关掉。")
+            + "绿底是做多价差，红底是做空价差。下图 z-score：红虚线开仓，灰点线平仓，金点线止损。",
+        )
     )
-    st.plotly_chart(prices_figure(frame), use_container_width=True, key="chart_prices")
-    st.caption("两条价格都从这段区间的第一天记为 100。深蓝是 A 股，暖橙是 H 股，H 股已经乘过汇率，换成人民币。")
+    _show_chart(prices_figure(view), "chart_prices")
+    st.caption(_meta("同上，起点归一为 100", view.index, "深蓝是 A 股，暖橙是 H 股，H 股已换成人民币。"))
     left, right = st.columns(2)
-    left.plotly_chart(premium_figure(frame), use_container_width=True, key="chart_premium")
-    right.plotly_chart(hedge_figure(frame, active=params.hedge), use_container_width=True, key="chart_hedge_signal")
+    with left:
+        _show_chart(premium_figure(view), "chart_premium")
+    with right:
+        _show_chart(hedge_figure(view, active=params.hedge), "chart_hedge_signal")
+    st.caption(_meta("溢价 = A / (H×汇率) − 1；β 只用当天以前的价格", view.index))
     spread_bytes = spread_png(frame, params.z_window)
     if spread_bytes:
         st.download_button(
@@ -812,11 +964,12 @@ with tab_coint:
         st.caption("这一行是因果价差在评估区间里的 AR(1)，和左边的全样本残差不是同一条序列。")
     rolling_p = result.get("rolling_p")
     if rolling_p is not None and len(rolling_p):
-        st.plotly_chart(rolling_p_figure(rolling_p), use_container_width=True, key="chart_rolling_p_diag")
-        st.caption("每个点用它之前 252 个同时开市日做 Engle–Granger，大约每 42 个交易日算一次。虚线是 0.05。")
+        _show_chart(rolling_p_figure(_span_frame(rolling_p, chart_span)), "chart_rolling_p_diag")
+        st.caption(_meta("滚动 Engle–Granger，每个点只用当时已经过去的 252 个交易日", _span_frame(rolling_p, chart_span).index, "虚线是 0.05。"))
     else:
         st.caption("评估区间不足 252 个交易日，没有画滚动协整 p 值。")
-    st.plotly_chart(static_resid_figure(frame), use_container_width=True, key="chart_resid_diag")
+    _show_chart(static_resid_figure(view), "chart_resid_diag")
+    st.caption(_meta("全样本 Engle–Granger 残差，用了评估区间内的全部价格", view.index, "这条线是描述，不是交易信号。"))
 
 with tab_stable:
     st.markdown(
@@ -835,14 +988,14 @@ with tab_stable:
     )
     rolling_p = result.get("rolling_p")
     if rolling_p is not None and len(rolling_p):
-        st.plotly_chart(rolling_p_figure(rolling_p), use_container_width=True, key="chart_rolling_p_stable")
-        st.caption("每个点只用它之前 252 个同时开市日做 Engle–Granger，大约每 42 个交易日算一次。虚线是 0.05。")
+        _show_chart(rolling_p_figure(_span_frame(rolling_p, chart_span)), "chart_rolling_p_stable")
+        st.caption(_meta("滚动 Engle–Granger", _span_frame(rolling_p, chart_span).index, "虚线是 0.05。稳定性地图本身仍用整个评估区间。"))
     else:
         st.caption("评估区间不足 252 个交易日，没有画滚动协整 p 值。")
-    st.plotly_chart(hedge_figure(frame, active=params.hedge), use_container_width=True, key="chart_hedge_stable")
+    _show_chart(hedge_figure(view, active=params.hedge), "chart_hedge_stable")
     used = "卡尔曼滤波" if params.hedge == "kalman" else "滚动 OLS"
     st.caption(f"两条 β 都只用当天以前的价格。现在仓位用的是{used}，图例里标了「交易用」。")
-    st.plotly_chart(static_resid_figure(frame), use_container_width=True, key="chart_resid_stable")
+    _show_chart(static_resid_figure(view), "chart_resid_stable")
     st.markdown("**扰动**")
     st.markdown(
         "不只做一次协整检验。系统会换窗口长度、换终点，再在全区间上切子样本、去掉极端日，"
@@ -893,10 +1046,10 @@ with tab_stable:
                 f"最危险的窗口是 **{pd.Timestamp(top['start']).date()} 至 {pd.Timestamp(top['end']).date()}**，"
                 f"长度 {int(top['length'])} 个交易日，p 值 {_pval(top['pvalue'])}。"
             )
-        st.plotly_chart(stability_heatmap(saved_stability["grid"]), use_container_width=True, key="chart_stability")
+        _show_chart(stability_heatmap(saved_stability["grid"]), "chart_stability")
         by_length = saved_stability.get("by_length")
         if isinstance(by_length, pd.DataFrame) and not by_length.empty:
-            st.plotly_chart(reject_rate_figure(by_length), use_container_width=True, key="chart_reject_rate")
+            _show_chart(reject_rate_figure(by_length), "chart_reject_rate")
             st.caption("柱子是该窗口长度上拒绝无协整的比例。暖橙虚线是 50%。")
         st.caption(
             "颜色越偏深蓝，p 值越小。0.05 以下才算在这个窗口里拒绝了无协整。"
@@ -942,15 +1095,71 @@ with tab_bt:
         ],
         columns=4,
     )
-    st.plotly_chart(equity_figure(frame), use_container_width=True, key="chart_equity")
+    _show_chart(equity_figure(view), "chart_equity")
+    st.caption(
+        _meta(
+            "策略净值和对照都用同一段同时开市日",
+            view.index,
+            "只持有 A、只持有 H、等权 A+H 是对照，不是另外找的基准。下面的数字按左侧整个评估区间计算，不随图表区间改变。",
+        )
+    )
     short_text = "允许做空 A 股。" if params.allow_short_a else "不允许做空 A 股：价差偏高时不交易。"
     cost_text = "已计入印花税、佣金、融券费和滑点。" if include_costs else "未扣交易成本，看到的是毛结果。"
     t1_text = "已按 T+1：下一个同时开市日收盘才成交。" if params.fill == "next_close" else "未按 T+1：信号当日收盘就成交，这比实盘更乐观。"
-    st.caption(
-        f"{frame.index.min().date()} 至 {frame.index.max().date()}，{stats['n_days']} 个同时开市日。"
-        f"夏普按 252 天年化，无风险利率按 0。Calmar 是年化收益除以最大回撤的绝对值。{cost_text}{t1_text}{short_text}"
-        " 净值图里的只持有 A、只持有 H 和等权 A+H 是对照，不是这个策略的基准。"
+    st.markdown("**口径**")
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "项目": [
+                    "样本区间",
+                    "行情截止",
+                    "初始净值",
+                    "总收益",
+                    "年化收益",
+                    "夏普",
+                    "交易次数",
+                    "成本合计",
+                    "融券费",
+                    "对照",
+                ],
+                "怎么算": [
+                    f"{frame.index.min().date()} 至 {frame.index.max().date()}，{stats['n_days']} 个同时开市日",
+                    f"{last_px.date()}，缓存写入 {cache_stamp}",
+                    "1。不是一笔货币资金",
+                    "期末净值 − 1",
+                    "期末净值 ^ (252 / 天数) − 1",
+                    "日收益均值 / 日收益标准差 × √252，无风险利率按 0",
+                    f"已平仓 {stats['n_trades']} 次。{cost_text}{t1_text}{short_text}",
+                    "每日交易成本占净值的比例直接相加，没有再复利成另一列",
+                    "空头权重 × 年化费率 / 252，按日相加",
+                    "同一区间的只持有 A、只持有 H、等权 A+H",
+                ],
+            }
+        ),
+        hide_index=True,
+        use_container_width=True,
     )
+    later = later_window_performance(frame, result["trades"])
+    if later.get("ok"):
+        st.markdown(
+            f"后半段 **{pd.Timestamp(later['start']).date()} 至 {pd.Timestamp(later['end']).date()}**"
+            f"（{later['n_days']} 天）沿用同一套参数，没有在前半段上重新找开仓阈值："
+            f"净收益 {_pct(later['total_return'])}，年化 {_pct(later['cagr'])}，这段里开仓 {later['n_trades']} 次。"
+            "这不是严格的样本外或 walk-forward 寻优。"
+        )
+    st.markdown("**成本敏感度**")
+    st.dataframe(
+        contrast_costs(frame, params),
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "净收益": st.column_config.NumberColumn(format="%.2%"),
+            "夏普": st.column_config.NumberColumn(format="%.2f"),
+            "成本合计": st.column_config.NumberColumn(format="%.2%"),
+            "融券费合计": st.column_config.NumberColumn(format="%.2%"),
+        },
+    )
+    st.caption("三行用同一条信号。不计成本把佣金、印花税、融券费和滑点都设成 0。最后一行是在当前滑点上再加 10 个基点。")
     sensitivity = result.get("sensitivity")
     if isinstance(sensitivity, pd.DataFrame) and not sensitivity.empty:
         st.markdown("**开仓阈值敏感性**")
@@ -1054,17 +1263,30 @@ with tab_flow:
     flow = result["northbound"]
     if north_error:
         st.info(f"北向资金没有载入：{north_error}")
-    elif flow is None or not flow.get("ok"):
-        st.info((flow or {}).get("message") or "北向净买入和这条价差的重叠不够，没有做回归。")
     else:
-        last = latest_valid(north) if north is not None else None
-        st.caption(
-            "左边是交易价差的日变化，柱子是沪深港通北向合计净买入（亿元）。"
-            "这是两市合计，不是这只股票自己的北向持仓。标准误是 HAC（5 阶）。"
-            + (f" 净买入最后有数的日期是 {pd.Timestamp(last).date()}。" if last is not None else "")
-        )
-        st.plotly_chart(northbound_figure(frame), use_container_width=True, key="chart_northbound")
-        st.dataframe(
+        common = frame.dropna(subset=["northbound"]) if "northbound" in frame.columns else frame.iloc[0:0]
+        nb_view = _span_frame(common, chart_span)
+        if nb_stale:
+            st.markdown(
+                f'<p class="health warn">北向是两市合计，不是 {picked["name"]} 的持仓。'
+                f"共同有数的日期止于 {nb_text}，行情到 {last_px.date()}。这张图不把停更之后的价差画进来。</p>",
+                unsafe_allow_html=True,
+            )
+        if len(nb_view) == 0:
+            st.warning(f"「{chart_span}」里没有北向日频。披露止于 {nb_text}。图表区间改成「全期间」才能看到共同区间。")
+        else:
+            st.caption(
+                _meta(
+                    "东财沪深港通北向合计",
+                    nb_view.index,
+                    "左轴是对数价差的日变化，右轴是净买入，单位亿元。只画两边都有数的日期。",
+                )
+            )
+            _show_chart(northbound_figure(nb_view), "chart_northbound")
+        if flow is None or not flow.get("ok"):
+            st.info((flow or {}).get("message") or "北向净买入和这条价差的重叠不够，没有做回归。")
+        else:
+            st.dataframe(
             pd.DataFrame(
                 [
                     {
@@ -1142,6 +1364,10 @@ with tab_note:
 
 **数据来源。** 价格优先用 Yahoo 复权收盘价，取不到时用东财前复权。股票池快照来自东财 A+H 行情，腾讯没有对应 A 股，不在池子里。北向是两市合计净买入，单位亿元，不是这只股票自己的持仓；2024 年 8 月 16 日之后日频流向停止披露。
 
+**数据新鲜度。** 每张图下列出来源、图上起止和缓存写入时间。行情最后一天如果比所选结束日或今天落后超过 7 天，页顶会标成偏旧。北向日频止于 2024-08-16，对照图只使用价差和北向都有数的日期。北向是两市合计，不是个股持仓。
+
+**界面语言。** 页面、术语和导出表使用简体中文，避免同一指标出现两套叫法。
+
 **稳定性。** 「稳定性」里换窗口长度、换终点、切半段、去掉极端日，看 5% 上拒绝无协整的比例。脆弱程度 = 1 − 成立比例。每个窗口的 Engle–Granger 用了该窗口里的全部价格，滞后固定为 1 阶，所以可以和页顶那次 AIC 选滞后的 p 值不一样。这些检验共用同一段价格，成立比例高只说明关系对换样本不那么敏感，不是样本外证据。
 
 **多重比较。** 开仓阈值敏感性，以及「一组对照」里按 p 值排序，都是同一段样本上的多次试验。最小的 p 值或最好的夏普会被挑得偏乐观。
@@ -1159,6 +1385,6 @@ with tab_note:
             st.markdown(changelog_path.read_text(encoding="utf-8"))
 
 st.markdown(
-    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.8 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
+    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.9 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
     unsafe_allow_html=True,
 )

@@ -193,6 +193,52 @@ def test_length_summary_reports_reject_rate_by_window():
     assert length_summary(pd.DataFrame(columns=["pvalue", "length", "reject_5"])).empty
 
 
+def test_price_is_stale_only_when_the_last_bar_lags_the_horizon():
+    from ah_pairs.freshness import northbound_stops_before, price_is_stale
+
+    assert not price_is_stale("2026-10-13", "2026-10-13", "2026-10-13")
+    assert price_is_stale("2026-09-01", "2026-10-13", "2026-10-13")
+    assert not price_is_stale("2020-12-31", "2020-12-31", "2026-10-13")
+    assert northbound_stops_before("2026-10-13", "2024-08-16")
+    assert not northbound_stops_before("2024-08-16", "2024-08-16")
+
+
+def test_later_window_and_zero_cost_do_not_reuse_a_new_parameter_search():
+    from ah_pairs.backtest import contrast_costs, later_window_performance
+
+    idx = pd.bdate_range("2020-01-02", periods=80)
+    frame = pd.DataFrame(
+        {
+            "z": np.concatenate([np.zeros(10), np.full(20, 3.0), np.zeros(50)]),
+            "beta": np.ones(80),
+            "ret_a": np.full(80, 0.001),
+            "ret_h": np.zeros(80),
+        },
+        index=idx,
+    )
+    params = _params(
+        costs=CostParams(
+            a_commission=0.01,
+            h_commission=0.0,
+            a_borrow_annual=0.0,
+            h_borrow_annual=0.0,
+            use_statutory_stamp=False,
+            a_stamp_sell=0.0,
+            h_stamp=0.0,
+            slippage=0.0,
+        )
+    )
+    table = contrast_costs(frame, params)
+    assert list(table["情形"]) == ["当前成本", "不计成本", "滑点再加 10 bps"]
+    assert table.loc[table["情形"] == "不计成本", "成本合计"].iloc[0] == 0
+    assert table.loc[table["情形"] == "当前成本", "成本合计"].iloc[0] > 0
+    worked, trades, _stats = run_backtest(frame, params)
+    later = later_window_performance(worked, trades)
+    assert later["ok"]
+    assert later["n_days"] == 40
+    assert pd.Timestamp(later["start"]) > idx[0]
+
+
 def test_hedge_ratio_ignores_the_future():
     y, x = _cointegrated_pair(n=600, seed=3)
     y2 = y.copy()
