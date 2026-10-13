@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-NAVY = "#1f4b3a"
+NAVY = "#1f4e79"
 RUST = "#b4532a"
 GREEN = "#1d6b45"
 RED = "#9b3a3a"
@@ -129,7 +129,7 @@ def premium_figure(frame: pd.DataFrame) -> go.Figure:
             name="A/H 溢价",
             line=dict(color=NAVY, width=1.6),
             fill="tozeroy",
-            fillcolor="rgba(31,75,58,0.08)",
+            fillcolor="rgba(31,78,121,0.08)",
         )
     )
     fig.add_hline(y=0, line_width=1, line_color="#d9d0c3")
@@ -199,7 +199,7 @@ def spread_figure(frame: pd.DataFrame, z_window: int = 60) -> go.Figure:
                 y=mean - width * std,
                 name=f"−{width:g}σ",
                 fill="tonexty",
-                fillcolor=f"rgba(31,75,58,{opacity})",
+                fillcolor=f"rgba(31,78,121,{opacity})",
                 line=dict(width=0),
                 showlegend=width == 2.0,
                 legendgroup="band",
@@ -307,7 +307,7 @@ def equity_figure(frame: pd.DataFrame) -> go.Figure:
             name="配对策略",
             line=dict(color=NAVY, width=2),
             fill="tozeroy",
-            fillcolor="rgba(31,75,58,0.08)",
+            fillcolor="rgba(31,78,121,0.08)",
         ),
         row=1,
         col=1,

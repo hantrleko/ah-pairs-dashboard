@@ -75,8 +75,8 @@ def spread_png(frame: pd.DataFrame, z_window: int) -> bytes | None:
         spread = frame["spread"]
         mean = spread.rolling(z_window, min_periods=z_window).mean()
         std = spread.rolling(z_window, min_periods=z_window).std()
-        ax.fill_between(frame.index, mean - 2 * std, mean + 2 * std, color="#1f4b3a", alpha=0.12)
-        ax.plot(frame.index, spread, color="#1f4b3a", lw=1.1)
+        ax.fill_between(frame.index, mean - 2 * std, mean + 2 * std, color="#1f4e79", alpha=0.12)
+        ax.plot(frame.index, spread, color="#1f4e79", lw=1.1)
         ax.set_title("交易价差")
 
     return _png(draw)
@@ -84,7 +84,7 @@ def spread_png(frame: pd.DataFrame, z_window: int) -> bytes | None:
 
 def equity_png(frame: pd.DataFrame) -> bytes | None:
     def draw(ax):
-        ax.plot(frame.index, frame["equity"], color="#1f4b3a", lw=1.3, label="策略")
+        ax.plot(frame.index, frame["equity"], color="#1f4e79", lw=1.3, label="策略")
         ax.set_title("策略净值")
 
     return _png(draw)

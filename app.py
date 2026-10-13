@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -25,25 +27,31 @@ from ah_pairs.plots import (
 )
 from ah_pairs.universe import LIQUID_A_CODES, liquid_subset, load_universe, refresh_universe
 
-st.set_page_config(page_title="A+H 协整与配对交易", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="EF Lab | A+H 协整配对",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+LOGO = Path(__file__).resolve().parent / "assets" / "eugene-finance-logo.jpg"
 st.markdown(
     """
 <style>
 html, body, [class*="css"] { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
-.stApp { background: #f3efe6; color: #1c1915; }
+.stApp { background: #f4f7fb; color: #16324f; }
 header[data-testid="stHeader"] { background: transparent; }
 #MainMenu, footer, [data-testid="stToolbar"] { visibility: hidden; }
 div[data-testid="stDecoration"] { display: none; }
 .block-container { padding-top: 1.15rem; padding-bottom: 2.5rem; max-width: 1180px; }
 section[data-testid="stSidebar"] {
-  background: #ebe4d8;
-  border-right: 1px solid #ddd4c6;
+  background: #eef3f8;
+  border-right: 1px solid #d5dee8;
 }
-section[data-testid="stSidebar"] > div { padding-top: 1.1rem; }
+section[data-testid="stSidebar"] > div { padding-top: 0.85rem; }
 section[data-testid="stSidebar"] h2 {
   font-size: 0.72rem;
   letter-spacing: 0.16em;
-  color: #6f675e;
+  color: #5a6a7a;
   font-weight: 600;
   margin-top: 0.4rem;
 }
@@ -53,87 +61,96 @@ section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] p {
 div[data-baseweb="select"] > div,
 div[data-baseweb="input"] > div,
 .stDateInput div[data-baseweb="input"] {
-  background: #fffcf8;
-  border-color: #ddd4c6;
+  background: #ffffff;
+  border-color: #d5dee8;
 }
 .stTabs [data-baseweb="tab-list"] {
   gap: 0.15rem;
-  border-bottom: 1px solid #e4dacc;
+  border-bottom: 1px solid #d5dee8;
 }
 .stTabs [data-baseweb="tab"] {
   background: transparent;
-  color: #6f675e;
+  color: #5a6a7a;
   border-radius: 0;
   padding: 0.45rem 0.7rem;
   font-size: 0.92rem;
 }
 .stTabs [aria-selected="true"] {
-  color: #1c1915;
-  border-bottom: 2px solid #1f4b3a;
+  color: #1f4e79;
+  border-bottom: 2px solid #1f4e79;
 }
 div[data-testid="stAlert"] {
-  background: #f7f1e4;
+  background: #f4f7fb;
   border: 0;
-  border-left: 3px solid #a6843d;
+  border-left: 3px solid #1f4e79;
   border-radius: 2px;
-  color: #1c1915;
+  color: #16324f;
 }
-div[data-testid="stDataFrame"] { border: 1px solid #e7dfd2; border-radius: 2px; }
+div[data-testid="stDataFrame"] { border: 1px solid #d5dee8; border-radius: 2px; }
 div[data-testid="stPlotlyChart"] {
-  background: #fffcf8;
-  border: 1px solid #e7dfd2;
+  background: #ffffff;
+  border: 1px solid #d5dee8;
   padding: 0.2rem 0.35rem 0;
   margin-bottom: 0.35rem;
 }
-div[data-testid="stCaptionContainer"] p { color: #8a8175; font-size: 0.82rem; }
+div[data-testid="stCaptionContainer"] p { color: #5a6a7a; font-size: 0.82rem; }
+.brand h1 {
+  margin: 0;
+  color: #1f4e79;
+  font-size: 1.65rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+.brand .subtitle { margin: 0.35rem 0 0; color: #5a6a7a; font-size: 0.92rem; }
 .note {
   margin: 0 0 0.95rem;
   padding: 0.15rem 0 0.15rem 0.7rem;
-  border-left: 3px solid #a6843d;
-  color: #4e483f;
+  border-left: 3px solid #1f4e79;
+  color: #3d4c5c;
   font-size: 0.9rem;
 }
-.note.ok { border-left-color: #1f4b3a; }
+.note.ok { border-left-color: #1d6b45; }
 .mast {
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
   gap: 1.5rem;
   padding: 0.15rem 0 0.85rem;
-  border-bottom: 1px solid #e4dacc;
+  border-bottom: 1px solid #d5dee8;
   margin-bottom: 0.85rem;
 }
-.mast .kicker {
-  margin: 0;
+.mast .kicker, .brand .kicker {
+  margin: 0 0 0.2rem;
   font-size: 0.72rem;
-  letter-spacing: 0.18em;
-  color: #6f675e;
+  letter-spacing: 0.16em;
+  color: #5a6a7a;
 }
-.mast h1 {
-  margin: 0.15rem 0 0;
+.pair-name {
+  margin: 0;
   font-family: Palatino Linotype, Songti SC, SimSun, serif;
   font-weight: 500;
-  font-size: 2.15rem;
+  font-size: 1.85rem;
   letter-spacing: -0.02em;
   line-height: 1.1;
-  color: #1c1915;
+  color: #16324f;
 }
-.mast .meta { margin: 0.35rem 0 0; color: #6f675e; font-size: 0.9rem; }
+.mast .meta { margin: 0.35rem 0 0; color: #5a6a7a; font-size: 0.9rem; }
 .mast .pill {
-  border: 1px solid #ddd4c6;
-  background: #fffcf8;
+  border: 1px solid #d5dee8;
+  background: #ffffff;
   padding: 0.55rem 0.8rem 0.45rem;
   min-width: 7.5rem;
   text-align: right;
 }
-.mast .pill span { display: block; font-size: 0.72rem; letter-spacing: 0.12em; color: #6f675e; }
+.mast .pill span { display: block; font-size: 0.72rem; letter-spacing: 0.12em; color: #5a6a7a; }
 .mast .pill strong {
   display: block;
   margin-top: 0.15rem;
   font-size: 1.35rem;
   font-weight: 560;
   font-variant-numeric: tabular-nums;
-  color: #1c1915;
+  color: #1f4e79;
 }
 .kpi-row {
   display: grid;
@@ -143,15 +160,15 @@ div[data-testid="stCaptionContainer"] p { color: #8a8175; font-size: 0.82rem; }
 }
 .kpi-row.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .kpi {
-  background: #fffcf8;
-  border: 1px solid #e7dfd2;
+  background: #ffffff;
+  border: 1px solid #d5dee8;
   padding: 0.62rem 0.75rem 0.55rem;
 }
 .kpi span {
   display: block;
   font-size: 0.72rem;
   letter-spacing: 0.04em;
-  color: #6f675e;
+  color: #5a6a7a;
 }
 .kpi strong {
   display: block;
@@ -160,13 +177,21 @@ div[data-testid="stCaptionContainer"] p { color: #8a8175; font-size: 0.82rem; }
   font-weight: 560;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
-  color: #1c1915;
+  color: #16324f;
 }
 .kpi.neg strong { color: #9b3a3a; }
 .kpi.pos strong { color: #1d6b45; }
+.site-footer {
+  margin-top: 1.6rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #d5dee8;
+  color: #5a6a7a;
+  font-size: 0.82rem;
+}
 @media (max-width: 900px) {
   .kpi-row, .kpi-row.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mast { flex-direction: column; align-items: flex-start; }
+  .brand h1 { font-size: 1.25rem; }
 }
 </style>
     """,
@@ -236,7 +261,24 @@ def _kpis(items: list[tuple[str, str, str]], columns: int = 6) -> None:
     st.markdown(f'<div class="{kind}">{cells}</div>', unsafe_allow_html=True)
 
 
+logo_col, title_col = st.columns([1, 5], vertical_alignment="center")
+with logo_col:
+    st.image(str(LOGO), width=156)
+with title_col:
+    st.markdown(
+        """
+<div class="brand">
+  <p class="kicker">V0.3 · EUGENE FINANCE</p>
+  <h1>EF Lab · A+H 股协整配对交易研究看板</h1>
+  <p class="subtitle">Interactive Cointegration &amp; Dynamic Pairs Trading Lab · 仅供学习与研究，不构成投资建议</p>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 with st.sidebar:
+    st.image(str(LOGO), width=148)
+    st.caption("EF Lab · eugenefinance.tech")
     st.header("样本")
     try:
         universe = cached_universe()
@@ -384,8 +426,8 @@ st.markdown(
     f"""
 <div class="mast">
   <div>
-    <p class="kicker">V0.2 · A + H 价差</p>
-    <h1>{picked["name"]}</h1>
+    <p class="kicker">V0.3 · 这一对</p>
+    <p class="pair-name">{picked["name"]}</p>
     <p class="meta">{picked.a_code} · {picked.h_code} · 最近交易日 {frame.index.max().date()} · {frame.index.min().date()} — {frame.index.max().date()} · {len(frame)} 个同时开市日。A、H 节假日不同，只保留两边都开市的日期。</p>
   </div>
   <div class="pill"><span>最近溢价</span><strong>{_pct(premium_last)}</strong></div>
@@ -715,3 +757,8 @@ with tab_note:
 **北向。** 东财汇总的北向净买入，单位亿元。2024 年 8 月之后日频流向停止披露。回归只描述价差变化和全市场北向是否同一天同向。
         """
     )
+
+st.markdown(
+    '<p class="site-footer">Part of EF Lab · eugenefinance.tech · V0.3 · 仅供学术研究与学习使用，不构成任何投资建议</p>',
+    unsafe_allow_html=True,
+)
