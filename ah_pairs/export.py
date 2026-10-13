@@ -31,6 +31,10 @@ def metrics_table(result: dict, name: str, a_code: str, h_code: str) -> pd.DataF
         ("夏普", stats["sharpe"]),
         ("最大回撤", stats["max_drawdown"]),
         ("交易次数", stats["n_trades"]),
+        ("胜率", stats["win_rate"]),
+        ("平均持仓天数", stats["avg_holding_days"]),
+        ("年化换手", stats["turnover"]),
+        ("Calmar", stats["calmar"]),
     ]
     return pd.DataFrame(rows, columns=["项目", "数值"])
 
@@ -75,7 +79,9 @@ def spread_png(frame: pd.DataFrame, z_window: int) -> bytes | None:
         spread = frame["spread"]
         mean = spread.rolling(z_window, min_periods=z_window).mean()
         std = spread.rolling(z_window, min_periods=z_window).std()
-        ax.fill_between(frame.index, mean - 2 * std, mean + 2 * std, color="#1f4e79", alpha=0.12)
+        ax.fill_between(frame.index, mean - 2 * std, mean + 2 * std, color="#1f4e79", alpha=0.08)
+        ax.fill_between(frame.index, mean - std, mean + std, color="#1f4e79", alpha=0.16)
+        ax.plot(frame.index, mean, color="#8a8175", lw=0.8, ls=":")
         ax.plot(frame.index, spread, color="#1f4e79", lw=1.1)
         ax.set_title("交易价差")
 

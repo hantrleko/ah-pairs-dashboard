@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 NAVY = "#1f4e79"
+H_ORANGE = "#e07a2f"
 RUST = "#b4532a"
 GREEN = "#1d6b45"
 RED = "#9b3a3a"
@@ -114,10 +115,10 @@ def prices_figure(frame: pd.DataFrame) -> go.Figure:
             x=frame.index,
             y=frame["h_cny"] / base_h * 100,
             name="H 股",
-            line=dict(color="#e07a2f", width=2.2),
+            line=dict(color=H_ORANGE, width=2.2),
         )
     )
-    return _layout(fig, "价格，起点 = 100")
+    return _layout(fig, "归一化价格，起点 = 100")
 
 
 def premium_figure(frame: pd.DataFrame) -> go.Figure:
@@ -234,14 +235,27 @@ def _trade_markers(fig: go.Figure, frame: pd.DataFrame, series: pd.Series, row: 
     entries = frame.loc[(position != 0) & (previous == 0)]
     exits = frame.loc[(position == 0) & (previous != 0)]
     extra = {"row": row, "col": 1} if row else {}
-    if len(entries):
+    long_entries = entries.loc[entries["position"] > 0]
+    short_entries = entries.loc[entries["position"] < 0]
+    if len(long_entries):
         fig.add_trace(
             go.Scatter(
-                x=entries.index,
-                y=series.reindex(entries.index),
-                name="开仓",
+                x=long_entries.index,
+                y=series.reindex(long_entries.index),
+                name="开仓：买 A 卖 H",
                 mode="markers",
-                marker=dict(symbol="triangle-up", size=9, color=GREEN),
+                marker=dict(symbol="triangle-up", size=10, color=GREEN, line=dict(width=0)),
+            ),
+            **extra,
+        )
+    if len(short_entries):
+        fig.add_trace(
+            go.Scatter(
+                x=short_entries.index,
+                y=series.reindex(short_entries.index),
+                name="开仓：卖 A 买 H",
+                mode="markers",
+                marker=dict(symbol="triangle-down", size=10, color=RED, line=dict(width=0)),
             ),
             **extra,
         )
@@ -252,7 +266,47 @@ def _trade_markers(fig: go.Figure, frame: pd.DataFrame, series: pd.Series, row: 
                 y=series.reindex(exits.index),
                 name="平仓",
                 mode="markers",
-                marker=dict(symbol="x", size=8, color=RED),
+                marker=dict(symbol="x", size=8, color=INK),
+            ),
+            **extra,
+        )
+
+
+def _sigma_bands(fig: go.Figure, index, mean: pd.Series, std: pd.Series, row: int | None = None) -> None:
+    """从外到内画 ±2、±1.5、±1σ，并给三条带各自一个图例。"""
+    extra = {"row": row, "col": 1} if row else {}
+    fills = {2.0: "rgba(31,78,121,0.08)", 1.5: "rgba(31,78,121,0.14)", 1.0: "rgba(31,78,121,0.22)"}
+    for width in (2.0, 1.5, 1.0):
+        fig.add_trace(
+            go.Scatter(
+                x=index,
+                y=mean + width * std,
+                line=dict(width=0),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            **extra,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=index,
+                y=mean - width * std,
+                fill="tonexty",
+                fillcolor=fills[width],
+                line=dict(width=0),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            **extra,
+        )
+    for width, color in ((1.0, "#8eacc4"), (1.5, "#5d84a8"), (2.0, NAVY)):
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="lines",
+                line=dict(color=color, width=8),
+                name=f"±{width:g}σ",
             ),
             **extra,
         )
@@ -271,32 +325,7 @@ def core_signal_figure(frame: pd.DataFrame, z_window: int, entry: float, exit_: 
         row_heights=[0.62, 0.38],
         subplot_titles=("价差", "z-score"),
     )
-    for width, opacity in ((2.0, 0.10), (1.5, 0.14), (1.0, 0.18)):
-        fig.add_trace(
-            go.Scatter(
-                x=frame.index,
-                y=mean + width * std,
-                line=dict(width=0),
-                showlegend=False,
-                hoverinfo="skip",
-            ),
-            row=1,
-            col=1,
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=frame.index,
-                y=mean - width * std,
-                name="±2σ" if width == 2 else "",
-                fill="tonexty",
-                fillcolor=f"rgba(31,78,121,{opacity})",
-                line=dict(width=0),
-                showlegend=width == 2,
-                hoverinfo="skip",
-            ),
-            row=1,
-            col=1,
-        )
+    _sigma_bands(fig, frame.index, mean, std, row=1)
     fig.add_trace(
         go.Scatter(x=frame.index, y=mean, name="滚动均值", line=dict(color=SLATE, width=1, dash="dot")),
         row=1,
@@ -309,7 +338,7 @@ def core_signal_figure(frame: pd.DataFrame, z_window: int, entry: float, exit_: 
     )
     _trade_markers(fig, frame, spread, row=1)
     fig.add_trace(
-        go.Scatter(x=frame.index, y=frame["z"], name="z-score", line=dict(color="#e07a2f", width=1.4)),
+        go.Scatter(x=frame.index, y=frame["z"], name="z-score", line=dict(color=H_ORANGE, width=1.4)),
         row=2,
         col=1,
     )
@@ -325,18 +354,52 @@ def core_signal_figure(frame: pd.DataFrame, z_window: int, entry: float, exit_: 
         fig.add_hline(y=-stop, line_dash="dot", line_color=GOLD, line_width=1, row=2, col=1)
     _position_bands(fig, frame, row=1)
     _position_bands(fig, frame, row=2)
-    return _layout(fig, "价差、开平仓与 z-score", height=640)
+    fig.add_trace(
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            marker=dict(symbol="square", size=12, color="rgba(29,107,69,0.45)"),
+            name="持仓：买 A 卖 H",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            marker=dict(symbol="square", size=12, color="rgba(155,58,58,0.45)"),
+            name="持仓：卖 A 买 H",
+        ),
+        row=1,
+        col=1,
+    )
+    fig = _layout(fig, "价差、开平仓与 z-score", height=720)
+    fig.update_layout(
+        margin=dict(l=48, r=18, t=56, b=88),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.12,
+            x=0,
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(size=12, color=INK),
+        ),
+    )
+    return fig
 
 
-def hedge_figure(frame: pd.DataFrame) -> go.Figure:
+def hedge_figure(frame: pd.DataFrame, active: str | None = None) -> go.Figure:
     fig = go.Figure()
     if "beta_rolling" in frame.columns:
         fig.add_trace(
             go.Scatter(
                 x=frame.index,
                 y=frame["beta_rolling"],
-                name="滚动 OLS",
-                line=dict(color=NAVY, width=1.6),
+                name="滚动 OLS" + ("（交易用）" if active == "rolling" else ""),
+                line=dict(color=NAVY, width=2.2 if active == "rolling" else 1.3),
             )
         )
     if "beta_kalman" in frame.columns:
@@ -344,8 +407,8 @@ def hedge_figure(frame: pd.DataFrame) -> go.Figure:
             go.Scatter(
                 x=frame.index,
                 y=frame["beta_kalman"],
-                name="卡尔曼",
-                line=dict(color=RUST, width=1.5),
+                name="卡尔曼" + ("（交易用）" if active == "kalman" else ""),
+                line=dict(color=H_ORANGE, width=2.2 if active == "kalman" else 1.3),
             )
         )
     if "beta_rolling" not in frame.columns and "beta_kalman" not in frame.columns:
@@ -386,7 +449,7 @@ def equity_figure(frame: pd.DataFrame) -> go.Figure:
         col=1,
     )
     fig.add_trace(
-        go.Scatter(x=frame.index, y=bh_a, name="只持有 A", line=dict(color=SLATE, width=1, dash="dot")),
+        go.Scatter(x=frame.index, y=bh_a, name="只持有 A", line=dict(color=NAVY, width=1.2, dash="dot")),
         row=1,
         col=1,
     )
@@ -394,8 +457,8 @@ def equity_figure(frame: pd.DataFrame) -> go.Figure:
         go.Scatter(
             x=frame.index,
             y=bh_h,
-            name="只持有 H（人民币）",
-            line=dict(color=RUST, width=1, dash="dot"),
+            name="只持有 H",
+            line=dict(color=H_ORANGE, width=1.3, dash="dash"),
         ),
         row=1,
         col=1,
@@ -491,6 +554,26 @@ def stability_heatmap(grid: pd.DataFrame) -> go.Figure:
         )
     )
     return _layout(fig, "协整 p 值：窗口长度 × 终点", height=420)
+
+
+def reject_rate_figure(summary: pd.DataFrame) -> go.Figure:
+    """每种窗口长度上，5% 拒绝无协整的比例。"""
+    if summary.empty:
+        return _layout(go.Figure(), "各窗口长度的成立比例")
+    fig = go.Figure(
+        go.Bar(
+            x=[f"{int(length)} 日" for length in summary["length"]],
+            y=summary["reject_rate"],
+            marker_color=NAVY,
+            text=[f"{rate:.0%}" if np.isfinite(rate) else "" for rate in summary["reject_rate"]],
+            textposition="outside",
+            name="成立比例",
+            hovertemplate="%{x}<br>成立比例 %{y:.1%}<extra></extra>",
+        )
+    )
+    fig.add_hline(y=0.5, line_dash="dot", line_color=H_ORANGE)
+    fig.update_yaxes(range=[0, 1.18], tickformat=".0%")
+    return _layout(fig, "各窗口长度的成立比例", height=320)
 
 
 def rolling_p_figure(pvalues: pd.Series) -> go.Figure:

@@ -176,6 +176,23 @@ def test_fragility_report_ranks_highest_p_and_handles_empty_grid():
     assert np.isnan(empty["fragility"])
 
 
+def test_length_summary_reports_reject_rate_by_window():
+    from ah_pairs.stability import length_summary
+
+    grid = pd.DataFrame(
+        {
+            "length": [126, 126, 252],
+            "pvalue": [0.01, 0.20, 0.04],
+            "reject_5": [True, False, True],
+        }
+    )
+    summary = length_summary(grid)
+    assert list(summary["length"]) == [126, 252]
+    assert summary.loc[summary["length"] == 126, "n_tests"].iloc[0] == 2
+    assert summary.loc[summary["length"] == 126, "reject_rate"].iloc[0] == 0.5
+    assert length_summary(pd.DataFrame(columns=["pvalue", "length", "reject_5"])).empty
+
+
 def test_hedge_ratio_ignores_the_future():
     y, x = _cointegrated_pair(n=600, seed=3)
     y2 = y.copy()

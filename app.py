@@ -21,11 +21,12 @@ from ah_pairs.plots import (
     northbound_figure,
     premium_figure,
     prices_figure,
+    reject_rate_figure,
     rolling_p_figure,
     stability_heatmap,
     static_resid_figure,
 )
-from ah_pairs.stability import fragility_report, slice_checks, stability_grid
+from ah_pairs.stability import fragility_report, length_summary, slice_checks, stability_grid
 from ah_pairs.universe import LIQUID_A_CODES, liquid_subset, load_universe, refresh_universe
 
 st.set_page_config(
@@ -289,7 +290,7 @@ with title_col:
     st.markdown(
         """
 <div class="brand">
-  <p class="kicker">V0.7 · EUGENE FINANCE</p>
+  <p class="kicker">V0.8 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H 股协整配对交易研究看板</h1>
   <p class="subtitle">Interactive Cointegration &amp; Dynamic Pairs Trading Lab · 仅供学习与研究，不构成投资建议</p>
 </div>
@@ -351,6 +352,7 @@ with st.sidebar:
             st.error(f"更新股票池失败：{exc}")
 
     st.header("信号")
+    st.markdown("**对冲**")
     hedge_label = st.radio(
         "对冲比率",
         ["滚动 OLS", "卡尔曼滤波"],
@@ -379,6 +381,7 @@ with st.sidebar:
         60,
         help="z 分数和价差图上 σ 带使用的滚动窗口。",
     )
+    st.markdown("**开平仓**")
     entry_z = st.slider("开仓 |z|", 1.0, 3.5, 2.0, 0.1, help="|z| 超过这里才开仓。越大，交易越少。")
     exit_z = st.slider("平仓 |z|", 0.0, 1.5, 0.5, 0.1, help="|z| 回到这里以内就平仓，必须小于开仓阈值。")
     stop_z = st.slider("止损 |z|（0 表示不用）", 0.0, 6.0, 4.0, 0.1, help="|z| 继续扩大到这里就止损。0 表示不止损。")
@@ -390,6 +393,7 @@ with st.sidebar:
         0.01,
         help="持仓期间 β 相对开仓时变化超过这个比例，才调整对冲，避免每天付印花税。",
     )
+    st.markdown("**成交与成本**")
     fill_label = st.radio(
         "T+1 约束",
         ["已考虑：次日收盘", "未考虑：当日收盘"],
@@ -400,9 +404,9 @@ with st.sidebar:
     allow_short_a = st.checkbox("允许做空 A 股", value=True, help="关掉后，A 股偏贵时不交易，只在 A 股相对便宜时买 A、卖 H。")
     require_positive_beta = st.checkbox("β 不为正时空仓", value=True, help="对冲比率不为正时不建仓。")
     include_costs = st.checkbox(
-        "计入交易成本",
+        "计入交易成本（A 股印花税和佣金、H 股费用）",
         value=True,
-        help="默认扣除 A 股印花税和佣金、H 股费用、融券费，以及汇率与成交滑点。关掉后看到的是不扣这些费用的结果。",
+        help="默认开启。扣除 A 股卖方印花税和佣金、H 股印花税和费用、两边融券费，以及汇率与成交滑点。关掉后看到的是不扣这些费用的结果。",
     )
 
     with st.expander("成本", expanded=False):
@@ -483,7 +487,7 @@ st.markdown(
     f"""
 <div class="mast">
   <div>
-    <p class="kicker">V0.7 · 这一对</p>
+    <p class="kicker">V0.8 · 这一对</p>
     <p class="pair-name">{picked["name"]}</p>
     <p class="meta">{picked.a_code} · {picked.h_code} · 最近交易日 {frame.index.max().date()} · {frame.index.min().date()} — {frame.index.max().date()} · {len(frame)} 个同时开市日。A、H 节假日不同，只保留两边都开市的日期。</p>
   </div>
@@ -706,12 +710,27 @@ with tab_px:
     st.plotly_chart(
         core_signal_figure(frame, params.z_window, params.entry_z, params.exit_z, params.stop_z),
         use_container_width=True,
+        key="chart_core",
     )
-    st.caption("上图浅色带是 ±1、±1.5、±2 个标准差，三角是开仓，叉是平仓，底色是持仓区间。下图是同一个 z 分数。")
-    st.plotly_chart(prices_figure(frame), use_container_width=True)
+    st.caption(
+        "上图是交易价差：点线是滚动均值，三条色带从内到外是 ±1σ、±1.5σ、±2σ。"
+        "上三角是买 A、卖 H，下三角是卖 A、买 H，叉是平仓。绿底是做多价差的持仓，红底是做空价差的持仓。"
+        "下图是同一个 z-score：红虚线是开仓，灰点线是平仓，金点线是止损。"
+    )
+    st.plotly_chart(prices_figure(frame), use_container_width=True, key="chart_prices")
+    st.caption("两条价格都从这段区间的第一天记为 100。深蓝是 A 股，暖橙是 H 股，H 股已经乘过汇率，换成人民币。")
     left, right = st.columns(2)
-    left.plotly_chart(premium_figure(frame), use_container_width=True)
-    right.plotly_chart(hedge_figure(frame), use_container_width=True)
+    left.plotly_chart(premium_figure(frame), use_container_width=True, key="chart_premium")
+    right.plotly_chart(hedge_figure(frame, active=params.hedge), use_container_width=True, key="chart_hedge_signal")
+    spread_bytes = spread_png(frame, params.z_window)
+    if spread_bytes:
+        st.download_button(
+            "下载价差图 PNG",
+            spread_bytes,
+            file_name=f"{picked.a_code}_spread.png",
+            mime="image/png",
+            key="spread_png_signal",
+        )
 
 with tab_coint:
     st.markdown(
@@ -793,13 +812,38 @@ with tab_coint:
         st.caption("这一行是因果价差在评估区间里的 AR(1)，和左边的全样本残差不是同一条序列。")
     rolling_p = result.get("rolling_p")
     if rolling_p is not None and len(rolling_p):
-        st.plotly_chart(rolling_p_figure(rolling_p), use_container_width=True)
+        st.plotly_chart(rolling_p_figure(rolling_p), use_container_width=True, key="chart_rolling_p_diag")
         st.caption("每个点用它之前 252 个同时开市日做 Engle–Granger，大约每 42 个交易日算一次。虚线是 0.05。")
     else:
         st.caption("评估区间不足 252 个交易日，没有画滚动协整 p 值。")
-    st.plotly_chart(static_resid_figure(frame), use_container_width=True)
+    st.plotly_chart(static_resid_figure(frame), use_container_width=True, key="chart_resid_diag")
 
 with tab_stable:
+    st.markdown(
+        "这一页回答两件事：这段样本里的关系本身稳不稳，以及换窗口、换子样本、去掉极端日之后还剩多少。"
+    )
+    st.markdown("**滚动关系**")
+    st.caption(
+        f"半衰期来自 AR(1)：价差_t = c + φ × 价差_(t−1) + e。"
+        f"全样本残差 φ = {_num(static_hl.get('phi'), 3)}，半衰期 = −ln(2) / ln(φ) = {_half_life_text(static_hl)}。"
+        "φ 越接近 1，回复越慢。交易用的是另一条因果价差，半衰期写在诊断页右边。"
+    )
+    adf = result.get("residual_adf") or {}
+    st.caption(
+        f"残差 ADF 统计量 {_num(adf.get('adf_stat'), 2)}，p 值 {_pval(adf.get('adf_pvalue'))}。"
+        + (adf.get("note") or "残差 ADF 不能代替 Engle–Granger p 值。")
+    )
+    rolling_p = result.get("rolling_p")
+    if rolling_p is not None and len(rolling_p):
+        st.plotly_chart(rolling_p_figure(rolling_p), use_container_width=True, key="chart_rolling_p_stable")
+        st.caption("每个点只用它之前 252 个同时开市日做 Engle–Granger，大约每 42 个交易日算一次。虚线是 0.05。")
+    else:
+        st.caption("评估区间不足 252 个交易日，没有画滚动协整 p 值。")
+    st.plotly_chart(hedge_figure(frame, active=params.hedge), use_container_width=True, key="chart_hedge_stable")
+    used = "卡尔曼滤波" if params.hedge == "kalman" else "滚动 OLS"
+    st.caption(f"两条 β 都只用当天以前的价格。现在仓位用的是{used}，图例里标了「交易用」。")
+    st.plotly_chart(static_resid_figure(frame), use_container_width=True, key="chart_resid_stable")
+    st.markdown("**扰动**")
     st.markdown(
         "不只做一次协整检验。系统会换窗口长度、换终点，再在全区间上切子样本、去掉极端日，"
         "看 5% 水平上还有多少情形能拒绝“没有协整”。"
@@ -814,6 +858,7 @@ with tab_stable:
                 "key": stability_key,
                 "grid": grid,
                 "report": fragility_report(grid),
+                "by_length": length_summary(grid),
                 "checks": slice_checks(frame),
             }
     saved_stability = st.session_state.get("stability")
@@ -848,7 +893,11 @@ with tab_stable:
                 f"最危险的窗口是 **{pd.Timestamp(top['start']).date()} 至 {pd.Timestamp(top['end']).date()}**，"
                 f"长度 {int(top['length'])} 个交易日，p 值 {_pval(top['pvalue'])}。"
             )
-        st.plotly_chart(stability_heatmap(saved_stability["grid"]), use_container_width=True)
+        st.plotly_chart(stability_heatmap(saved_stability["grid"]), use_container_width=True, key="chart_stability")
+        by_length = saved_stability.get("by_length")
+        if isinstance(by_length, pd.DataFrame) and not by_length.empty:
+            st.plotly_chart(reject_rate_figure(by_length), use_container_width=True, key="chart_reject_rate")
+            st.caption("柱子是该窗口长度上拒绝无协整的比例。暖橙虚线是 50%。")
         st.caption(
             "颜色越偏深蓝，p 值越小。0.05 以下才算在这个窗口里拒绝了无协整。"
             "这里为了重复计算，每个窗口的滞后都固定为 1 阶，和诊断页里用 AIC 选滞后的那一次检验不完全相同。"
@@ -893,7 +942,7 @@ with tab_bt:
         ],
         columns=4,
     )
-    st.plotly_chart(equity_figure(frame), use_container_width=True)
+    st.plotly_chart(equity_figure(frame), use_container_width=True, key="chart_equity")
     short_text = "允许做空 A 股。" if params.allow_short_a else "不允许做空 A 股：价差偏高时不交易。"
     cost_text = "已计入印花税、佣金、融券费和滑点。" if include_costs else "未扣交易成本，看到的是毛结果。"
     t1_text = "已按 T+1：下一个同时开市日收盘才成交。" if params.fill == "next_close" else "未按 T+1：信号当日收盘就成交，这比实盘更乐观。"
@@ -986,8 +1035,20 @@ with tab_bt:
     )
     if spread_bytes and equity_bytes:
         p1, p2 = st.columns(2)
-        p1.download_button("价差图 PNG", spread_bytes, file_name=f"{picked.a_code}_spread.png", mime="image/png")
-        p2.download_button("净值图 PNG", equity_bytes, file_name=f"{picked.a_code}_equity.png", mime="image/png")
+        p1.download_button(
+            "价差图 PNG",
+            spread_bytes,
+            file_name=f"{picked.a_code}_spread.png",
+            mime="image/png",
+            key="spread_png_backtest",
+        )
+        p2.download_button(
+            "净值图 PNG",
+            equity_bytes,
+            file_name=f"{picked.a_code}_equity.png",
+            mime="image/png",
+            key="equity_png_backtest",
+        )
 
 with tab_flow:
     flow = result["northbound"]
@@ -1002,7 +1063,7 @@ with tab_flow:
             "这是两市合计，不是这只股票自己的北向持仓。标准误是 HAC（5 阶）。"
             + (f" 净买入最后有数的日期是 {pd.Timestamp(last).date()}。" if last is not None else "")
         )
-        st.plotly_chart(northbound_figure(frame), use_container_width=True)
+        st.plotly_chart(northbound_figure(frame), use_container_width=True, key="chart_northbound")
         st.dataframe(
             pd.DataFrame(
                 [
@@ -1073,25 +1134,31 @@ with tab_note:
         """
 **价格。** A 股、H 股用复权收盘价。H 股乘以港元兑人民币 `HKDCNY`，再和 A 股取对数。两边节假日不同，只保留同时有价格的日期，股价不向前填充。汇率最多向前填 5 个交易日。
 
-**协整。** 全样本 Engle–Granger 是 `log A = α + β log H + e`。报告的 EG p 值来自协整分布。残差上的普通 ADF 只是补充：残差是同一段样本估出来的，这个 p 值会偏小，不能拿来代替 EG p 值。Johansen 迹检验含常数项。半衰期来自 AR(1)，`半衰期 = −ln 2 / ln φ`。滚动 p 值每个窗口只用当时已经过去的 252 个交易日。
+**协整。** 全样本 Engle–Granger 检验的原假设是「没有协整」。回归是 `log A = α + β log H + e`，含常数项，滞后用 AIC 选择。报告的 p 值是 MacKinnon 协整 p 值。残差上再做一次普通 ADF 会偏乐观，因为残差是同一段样本估出来的，不能拿来代替 EG p 值。Johansen 迹检验含常数项，差分滞后由 VAR 的 AIC 减 1。半衰期来自 AR(1)，`半衰期 = −ln 2 / ln φ`，只在 0 < φ < 1 时有限。
 
-**交易。** 回测用的 β 是滚动 OLS 或卡尔曼滤波，只用当天以前的价格。图上两条 β 都会画出来，仓位只用侧栏选中的那一条。z 分数用含当天在内的滚动均值和标准差，成交放在信号之后。默认下一个同时开市日收盘才成交，所以 A 股不会在买入的同一根日 K 里卖出。
+**交易和前视。** 全样本 β、EG、Johansen 和静态残差用了评估区间里的全部价格，只能当描述。回测用的 β 是滚动 OLS 或卡尔曼滤波，只用当天以前的价格；两条路径都会画出来，仓位只用侧栏选中的那一条。z 分数的滚动均值和标准差含当天的价差，成交放在信号之后。默认下一个同时开市日收盘才成交，所以 A 股不会在买入的同一根日 K 里卖出。选「未考虑：当日收盘」会更乐观。
 
-**成本和日历。** 佣金、法定印花税、融券费、汇率与成交滑点都在侧栏里。印花税按日期分档。A、H 节假日不一致的日期整行删掉，不用前值填股价。
+**成本和日历。** 默认计入 A 股卖方印花税和佣金、H 股印花税和费用、融券费、汇率与成交滑点。印花税按日期分档，侧栏可以关掉整组成本。A、H 节假日不一致的日期整行删掉，股价不向前填充。汇率最多向前填 5 个交易日，并且要求中间价落在合理区间。
 
-**稳定性。** 「稳定性」里换窗口长度、换终点、切半段、去掉极端日，看 5% 上拒绝无协整的比例。脆弱程度 = 1 − 成立比例。每个窗口的 Engle–Granger 用了该窗口里的全部价格，滞后固定为 1 阶。这些检验共用同一段价格，成立比例高只说明关系对换样本不那么敏感，不是样本外证据。
+**数据来源。** 价格优先用 Yahoo 复权收盘价，取不到时用东财前复权。股票池快照来自东财 A+H 行情，腾讯没有对应 A 股，不在池子里。北向是两市合计净买入，单位亿元，不是这只股票自己的持仓；2024 年 8 月 16 日之后日频流向停止披露。
 
-**前视和多重比较。** 全样本 β、EG 和 Johansen 用了评估区间里的全部价格，只能当描述。交易信号本身不用未来价格。开仓阈值敏感性、以及「一组对照」里按 p 值排序，都是同一段样本上的多次试验，最小的 p 值或最好的夏普会被挑得偏乐观。
+**稳定性。** 「稳定性」里换窗口长度、换终点、切半段、去掉极端日，看 5% 上拒绝无协整的比例。脆弱程度 = 1 − 成立比例。每个窗口的 Engle–Granger 用了该窗口里的全部价格，滞后固定为 1 阶，所以可以和页顶那次 AIC 选滞后的 p 值不一样。这些检验共用同一段价格，成立比例高只说明关系对换样本不那么敏感，不是样本外证据。
 
-**不要读成什么。** 样本内协整不保证以后还在。A/H 不能转换，溢价可以在高位停很多年。做空 A 股取决于能不能借到券。腾讯没有 A 股，不在这个股票池里。
+**多重比较。** 开仓阈值敏感性，以及「一组对照」里按 p 值排序，都是同一段样本上的多次试验。最小的 p 值或最好的夏普会被挑得偏乐观。
+
+**不要读成什么。** 样本内协整不保证以后还在。A/H 不能转换，溢价可以在高位停很多年。做空 A 股取决于能不能借到券。
 
 **权重。** 做多价差是买 A、按 β 卖 H，`|w_A| + |w_H| = 1`。持仓期间把开仓时的 β 锁住，只有 β 的相对变化超过再平衡带才调整。
 
-**北向。** 东财汇总的北向净买入，单位亿元。2024 年 8 月之后日频流向停止披露。回归只描述价差变化和全市场北向是否同一天同向。
+**北向。** 回归只描述价差变化和全市场北向是否同一天同向。标准误是 HAC（5 阶）。
         """
     )
+    changelog_path = Path(__file__).resolve().parent / "CHANGELOG.md"
+    if changelog_path.exists():
+        with st.expander("版本记录"):
+            st.markdown(changelog_path.read_text(encoding="utf-8"))
 
 st.markdown(
-    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.7 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
+    '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V0.8 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
     unsafe_allow_html=True,
 )

@@ -86,6 +86,21 @@ def fragility_report(grid: pd.DataFrame, top: int = 5) -> dict:
     }
 
 
+def length_summary(grid: pd.DataFrame) -> pd.DataFrame:
+    """每种窗口长度上的检验次数和 5% 成立比例。"""
+    columns = ["length", "n_tests", "reject_rate"]
+    if grid.empty or "pvalue" not in grid.columns or grid["pvalue"].notna().sum() == 0:
+        return pd.DataFrame(columns=columns)
+    valid = grid.dropna(subset=["pvalue"])
+    out = (
+        valid.groupby("length", as_index=False)
+        .agg(n_tests=("reject_5", "size"), reject_rate=("reject_5", "mean"))
+        .sort_values("length")
+        .reset_index(drop=True)
+    )
+    return out
+
+
 def slice_checks(frame: pd.DataFrame) -> pd.DataFrame:
     """全区间、前后半段、去掉一段，以及剔除极端日之后的检验。"""
     specs = [("全区间", frame)]
