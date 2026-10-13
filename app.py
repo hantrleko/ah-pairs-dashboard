@@ -417,9 +417,6 @@ static_hl = result["half_life_static"]
 traded_hl = result["half_life_traded"]
 johansen = result["johansen"]
 
-for note in notes:
-    st.caption(note)
-
 premium_now = frame["premium"].dropna()
 premium_last = float(premium_now.iloc[-1]) if len(premium_now) else np.nan
 st.markdown(
@@ -453,6 +450,8 @@ if eg["reject_5"]:
 else:
     verdict = '<p class="note">这段区间没有在 5% 水平上拒绝无协整。回测仍会按规则下单，价差不一定回到均值。</p>'
 st.markdown(verdict, unsafe_allow_html=True)
+for note in notes:
+    st.caption(note)
 
 tab_px, tab_coint, tab_bt, tab_flow, tab_scan, tab_note = st.tabs(
     ["价差与信号", "协整诊断", "回测", "北向资金", "一组对照", "方法说明"]
