@@ -7,10 +7,12 @@ import io
 import numpy as np
 import pandas as pd
 
+from ah_pairs.i18n import tx
+
 
 def metrics_table(result: dict, name: str, a_code: str, h_code: str) -> pd.DataFrame:
     eg = result["eg"]
-    hl = result["half_life_static"]
+    hl = result.get("half_life_static") or {}
     adf = result.get("residual_adf") or {}
     stats = result["stats"]
     frame = result["frame"]
@@ -55,6 +57,28 @@ def metrics_latex(table: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def chosen_cjk_font() -> str:
+    """优先用能画中文的字体。容器里是 Noto Sans CJK，Windows 上通常是微软雅黑。"""
+    try:
+        from matplotlib import font_manager
+    except Exception:
+        return "DejaVu Sans"
+    wanted = (
+        "Noto Sans CJK SC",
+        "Noto Sans CJK JP",
+        "Noto Sans SC",
+        "Source Han Sans SC",
+        "Microsoft YaHei",
+        "SimHei",
+        "PingFang SC",
+    )
+    names = {font.name for font in font_manager.fontManager.ttflist}
+    for name in wanted:
+        if name in names:
+            return name
+    return "DejaVu Sans"
+
+
 def _png(draw) -> bytes | None:
     try:
         import matplotlib
@@ -63,6 +87,9 @@ def _png(draw) -> bytes | None:
         import matplotlib.pyplot as plt
     except Exception:
         return None
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = [chosen_cjk_font(), "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
     fig, ax = plt.subplots(figsize=(8.2, 3.6), dpi=140)
     draw(ax)
     ax.spines["top"].set_visible(False)
@@ -83,7 +110,7 @@ def spread_png(frame: pd.DataFrame, z_window: int) -> bytes | None:
         ax.fill_between(frame.index, mean - std, mean + std, color="#1f4e79", alpha=0.16)
         ax.plot(frame.index, mean, color="#8a8175", lw=0.8, ls=":")
         ax.plot(frame.index, spread, color="#1f4e79", lw=1.1)
-        ax.set_title("交易价差")
+        ax.set_title(tx("交易价差", "Traded spread"))
 
     return _png(draw)
 
@@ -91,6 +118,6 @@ def spread_png(frame: pd.DataFrame, z_window: int) -> bytes | None:
 def equity_png(frame: pd.DataFrame) -> bytes | None:
     def draw(ax):
         ax.plot(frame.index, frame["equity"], color="#1f4e79", lw=1.3, label="策略")
-        ax.set_title("策略净值")
+        ax.set_title(tx("策略净值", "Strategy equity"))
 
     return _png(draw)

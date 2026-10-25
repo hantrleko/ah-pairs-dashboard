@@ -367,3 +367,261 @@ def test_costs_reduce_equity_and_beta_band_does_not_churn():
     assert free["w_a"].iloc[5] == pytest.approx(1 / 2.5)
     assert free_stats["n_trades"] == 0  # 到样本结束还没平仓
     assert free_stats["n_open"] == 1
+
+
+def test_default_strategy_does_not_short_a_shares():
+    assert StrategyParams().allow_short_a is False
+
+
+def test_rolling_ols_matches_the_normal_equation_and_stays_causal():
+    y, x = _cointegrated_pair(n=300, seed=2)
+    alpha, beta = rolling_ols(y, x, 80)
+    for t in (100, 200):
+        design = np.column_stack([np.ones(80), x[t - 80 : t]])
+        coef = np.linalg.lstsq(design, y[t - 80 : t], rcond=None)[0]
+        assert alpha[t] == pytest.approx(coef[0], rel=1e-6, abs=1e-6)
+        assert beta[t] == pytest.approx(coef[1], rel=1e-6, abs=1e-6)
+
+
+def test_kalman_delta_estimated_on_a_prefix_ignores_the_future():
+    from ah_pairs.analysis import analyze_frame
+
+    y, x = _cointegrated_pair(n=400, phi=0.8, seed=5)
+    index = pd.bdate_range("2016-01-04", periods=len(y))
+
+    def prices_for(series):
+        return pd.DataFrame(
+            {
+                "log_a": series,
+                "log_h": x,
+                "a_cny": np.exp(series),
+                "h_hkd": np.exp(x),
+                "fx": 1.0,
+                "h_cny": np.exp(x),
+                "premium": 0.0,
+                "ret_a": 0.0,
+                "ret_h": 0.0,
+                "both_open": True,
+            },
+            index=index,
+        )
+
+    params = _params(hedge="kalman", kalman_delta_auto=True, hedge_window=60, z_window=20)
+    shifted = y.copy()
+    shifted[250:] += 4.0
+    original = analyze_frame(prices_for(y), params, eval_start=index[250], full_diagnostics=False)
+    moved = analyze_frame(prices_for(shifted), params, eval_start=index[250], full_diagnostics=False)
+    assert original["kalman_fit"]["reason"] == "warmup"
+    assert original["kalman_fit"]["delta"] == moved["kalman_fit"]["delta"]
+    assert original["kalman_fit"]["delta"] > 0
+
+
+def test_one_sided_day_keeps_the_open_position_and_does_not_fill_early():
+    index = pd.bdate_range("2024-01-02", periods=4)
+    held = pd.DataFrame(
+        {
+            "z": [-3.0, -3.0, -3.0, 0.0],
+            "beta": np.ones(4),
+            "ret_a": [0.0, 0.04, 0.0, 0.0],
+            "ret_h": [0.0, 0.0, 0.0, 0.0],
+            "both_open": [True, False, True, True],
+        },
+        index=index,
+    )
+    work, _trades, stats = run_backtest(held, _params(fill="same_close", stop_z=0.0))
+    assert work["position"].tolist() == [1, 1, 1, 0]
+    assert work["ret_strat"].iloc[1] == pytest.approx(0.5 * 0.04)
+    assert stats["n_one_sided"] == 1
+    pending = pd.DataFrame(
+        {
+            "z": [0.0, -3.0, -3.0, 0.0],
+            "beta": np.ones(4),
+            "ret_a": np.zeros(4),
+            "ret_h": np.zeros(4),
+            "both_open": [True, True, False, True],
+        },
+        index=index,
+    )
+    delayed, _trades, _stats = run_backtest(pending, _params(fill="next_close", stop_z=0.0))
+    assert delayed["position"].tolist()[2] == 0
+    assert delayed["position"].tolist()[3] == 1
+
+
+def test_assemble_pair_counts_one_sided_sessions_and_zeros_the_closed_leg():
+    from ah_pairs.data import assemble_pair
+
+    index = pd.bdate_range("2024-01-02", periods=4)
+    a = pd.Series([10.0, 11.0, 11.0, 12.0], index=index)
+    h = pd.Series([10.0, np.nan, 10.0, 10.0], index=index)
+    fx = pd.Series(1.0, index=index)
+    frame, notes = assemble_pair(a, h, fx, index[0], index[-1])
+    assert frame["both_open"].tolist() == [True, False, True, True]
+    assert frame["ret_a"].iloc[1] == pytest.approx(0.1)
+    assert frame["ret_h"].iloc[1] == pytest.approx(0.0)
+    assert any("只有一边开市 1 天" in note for note in notes)
+
+
+def test_cointegration_sample_drops_one_sided_days():
+    from ah_pairs.analysis import analyze_frame
+
+    y, x = _cointegrated_pair(n=220, phi=0.6, seed=4)
+    index = pd.bdate_range("2018-01-02", periods=len(y))
+    prices = pd.DataFrame(
+        {
+            "log_a": y,
+            "log_h": x,
+            "a_cny": np.exp(y),
+            "h_hkd": np.exp(x),
+            "fx": 1.0,
+            "h_cny": np.exp(x),
+            "premium": 0.0,
+            "ret_a": 0.0,
+            "ret_h": 0.0,
+            "both_open": True,
+        },
+        index=index,
+    )
+    prices.loc[prices.index[10:25], "both_open"] = False
+    result = analyze_frame(prices, _params(hedge_window=40, z_window=20), full_diagnostics=False)
+    assert result["eg"]["nobs"] == int(prices["both_open"].sum())
+    assert result["n_one_sided"] == 15
+
+
+def test_benjamini_hochberg_uses_the_largest_ranked_threshold():
+    from ah_pairs.stability import benjamini_hochberg
+
+    modest = benjamini_hochberg([0.01, 0.04, 0.03, 0.20])
+    assert modest["m"] == 4
+    assert modest["n_reject"] == 1
+    strong = benjamini_hochberg([0.001, 0.001, 0.001])
+    assert strong["n_reject"] == 3
+    assert benjamini_hochberg([])["m"] == 0
+
+
+def test_sharpe_interval_and_deflated_probability_are_bounded():
+    from ah_pairs.inference import block_bootstrap_sharpe, sharpe_probability
+
+    rng = np.random.default_rng(3)
+    returns = rng.normal(0.0002, 0.01, 400)
+    interval = block_bootstrap_sharpe(returns, block=10, n_boot=80, seed=1)
+    assert interval["ok"]
+    assert np.isfinite(interval["low"]) and np.isfinite(interval["high"])
+    assert interval["low"] <= interval["high"]
+    prob = sharpe_probability(returns, n_trials=8)
+    assert prob["ok"]
+    assert 0 <= prob["psr"] <= 1
+    assert 0 <= prob["dsr"] <= 1
+    assert prob["dsr"] <= prob["psr"] + 1e-8
+
+
+def test_walk_forward_yearly_folds_lock_both_thresholds():
+    from ah_pairs.analysis import walk_forward
+
+    index = pd.bdate_range("2016-01-04", periods=800)
+    z = np.zeros(800)
+    z[20:40] = 3.0
+    z[300:330] = -3.0
+    z[600:630] = 3.0
+    frame = pd.DataFrame(
+        {"z": z, "beta": np.ones(800), "ret_a": np.full(800, 0.0004), "ret_h": np.zeros(800)},
+        index=index,
+    )
+    result = walk_forward(frame, _params(fill="same_close"))
+    assert result["ok"]
+    assert result["scheme"] == "anchored-year"
+    assert result["n_folds"] >= 2
+    table = result["table"]
+    checked = 0
+    for label in table["区间"]:
+        if not str(label).startswith("验证 "):
+            continue
+        year = str(label).split()[-1]
+        train = table.loc[table["区间"] == f"训练 {year}"].iloc[0]
+        valid = table.loc[table["区间"] == label].iloc[0]
+        assert train["开仓 |z|"] == valid["开仓 |z|"]
+        assert train["平仓 |z|"] == valid["平仓 |z|"]
+        assert valid["平仓 |z|"] < valid["开仓 |z|"]
+        checked += 1
+    assert checked >= 2
+
+
+def test_inverse_vol_weights_are_lagged_and_sum_to_one():
+    from ah_pairs.portfolio import inverse_vol_weights
+
+    index = pd.bdate_range("2020-01-02", periods=80)
+    rng = np.random.default_rng(1)
+    left = pd.Series(rng.normal(0.0, 0.01, 80), index=index)
+    right = pd.Series(rng.normal(0.0, 0.02, 80), index=index)
+    shocked = pd.DataFrame({"a": left, "b": right})
+    shocked.iloc[70, 1] = 1.0
+    calm = shocked.copy()
+    calm.iloc[70, 1] = 0.0
+    weights = inverse_vol_weights(shocked, lookback=20)
+    other = inverse_vol_weights(calm, lookback=20)
+    pd.testing.assert_series_equal(weights.iloc[70], other.iloc[70])
+    active = weights.sum(axis=1) > 0
+    assert np.allclose(weights.loc[active].sum(axis=1), 1.0)
+
+
+def test_research_bundle_is_a_zip_and_png_export_has_a_header():
+    from ah_pairs.bundle import research_zip
+    from ah_pairs.export import chosen_cjk_font, spread_png
+
+    frame, trades, stats = run_backtest(_book(np.array([0.0, -3.0, -3.0, 0.0]), np.ones(4)), _params(fill="same_close"))
+    frame = frame.assign(spread=np.linspace(0.0, 1.0, len(frame)))
+    result = {
+        "frame": frame,
+        "trades": trades,
+        "stats": stats,
+        "eg": {"pvalue": 0.2, "beta": 1.0, "nobs": 4, "t_stat": -2.0},
+        "half_life_static": {"phi": 0.9, "half_life": 6.0},
+        "residual_adf": {},
+        "params": _params(),
+        "kalman_fit": {"delta": 1e-4, "message": ""},
+        "n_common": 4,
+        "n_one_sided": 0,
+    }
+    blob = research_zip(result, "平安", "601318", "02318", 20)
+    assert blob[:2] == b"PK"
+    picture = spread_png(frame.assign(spread=np.linspace(0, 1, len(frame))), 2)
+    assert picture is not None and picture.startswith(b"\x89PNG")
+    assert chosen_cjk_font()
+
+
+def test_price_cache_round_trips_through_parquet(tmp_path):
+    from ah_pairs.data import _read_series, _write_series
+
+    index = pd.bdate_range("2024-01-02", periods=3)
+    series = pd.Series([1.0, 2.0, 3.0], index=index, name="close")
+    path = tmp_path / "601318.SS.parquet"
+    _write_series(path, series)
+    loaded = _read_series(path)
+    assert loaded.tolist() == [1.0, 2.0, 3.0]
+
+
+def test_alert_payload_is_absent_until_z_crosses_the_entry():
+    from ah_pairs.alerts import alert_payload
+
+    quiet = {"z": 0.4, "position": 0, "signal": 0, "pending": False, "asof": pd.Timestamp("2026-10-13")}
+    assert alert_payload("平安", "601318", "02318", quiet, 2.0) is None
+    loud = dict(quiet, z=2.4, signal=-1, pending=True)
+    payload = alert_payload("平安", "601318", "02318", loud, 2.0)
+    assert payload["pending"] is True
+    assert "不是下单" in payload["note"]
+
+
+def test_language_toggle_uses_english_and_traditional():
+    from ah_pairs.i18n import set_lang, tx
+
+    set_lang("en")
+    assert tx("协整", "cointegration") == "cointegration"
+    set_lang("zh-Hant")
+    traditional = tx("协整", "cointegration")
+    set_lang("zh")
+    assert traditional != "cointegration"
+    try:
+        import zhconv
+    except Exception:
+        return
+    assert traditional == zhconv.convert("协整", "zh-hant")
+

@@ -1,0 +1,26 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  railway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Deploy when a token is configured
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: f6c575bf-a8da-48eb-b1ac-2e0089a9daa1
+          RAILWAY_SERVICE_ID: 38f45f68-a92f-4488-9359-142ed6f26400
+          RAILWAY_ENVIRONMENT_ID: c595b32b-f875-41b3-b7a6-776de904cbd4
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "RAILWAY_TOKEN is not set. Push does not redeploy until the Railway GitHub app is connected or this secret is added."
+            exit 0
+          fi
+          railway up --detach --service ah-pairs-dashboard --environment production -m "github main"

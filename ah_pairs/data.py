@@ -15,7 +15,7 @@ HISTORY_START = "2010-01-01"
 
 def _cache_file(cache_dir: Path, ticker: str) -> Path:
     safe = ticker.replace("=", "_").replace("^", "_")
-    return cache_dir / f"{safe}.csv"
+    return cache_dir / f"{safe}.parquet"
 
 
 def _normalize_index(index) -> pd.DatetimeIndex:
@@ -30,18 +30,38 @@ def _write_series(path: Path, series: pd.Series) -> None:
     out = series.dropna().sort_index()
     out = out[~out.index.duplicated(keep="last")]
     frame = out.rename("close").to_frame()
-    tmp = path.with_suffix(".tmp.csv")
-    frame.to_csv(tmp, encoding="utf-8")
+    frame.index.name = "date"
+    tmp = path.with_suffix(".tmp.parquet")
+    frame.to_parquet(tmp)
     tmp.replace(path)
 
 
+def _read_frame(path: Path) -> pd.DataFrame:
+    if path.suffix == ".parquet":
+        frame = pd.read_parquet(path)
+    else:
+        frame = pd.read_csv(path, index_col=0, parse_dates=True)
+    if "date" in frame.columns and not isinstance(frame.index, pd.DatetimeIndex):
+        frame = frame.set_index("date")
+    return frame
+
+
 def _read_series(path: Path) -> pd.Series:
-    frame = pd.read_csv(path, index_col=0, parse_dates=True)
+    frame = _read_frame(path)
     series = frame.iloc[:, 0].astype(float)
     series.index = _normalize_index(series.index)
     series = series[~series.index.duplicated(keep="last")].sort_index()
     series.name = "close"
     return series.dropna()
+
+
+def _cached_series(path: Path) -> pd.Series:
+    legacy = path.with_suffix(".csv")
+    if path.exists():
+        return _read_series(path)
+    if legacy.exists():
+        return _read_series(legacy)
+    return pd.Series(dtype=float)
 
 
 def _cache_covers(series: pd.Series, today: pd.Timestamp | None = None) -> bool:
@@ -117,7 +137,7 @@ def get_close(
 ) -> tuple[pd.Series, str]:
     """返回 (收盘价, 来源)。来源是 cache、yahoo 或 eastmoney。"""
     path = _cache_file(cache_dir, ticker)
-    cached = _read_series(path) if path.exists() else pd.Series(dtype=float)
+    cached = _cached_series(path)
     if not refresh and _cache_covers(cached):
         return cached, "cache"
 
@@ -158,6 +178,59 @@ def get_fx(cache_dir: Path = CACHE_DIR, refresh: bool = False) -> tuple[pd.Serie
     return series, source
 
 
+def assemble_pair(a_px, h_px, fx, start, end) -> tuple[pd.DataFrame, list[str]]:
+    """把两条价格和汇率拼成回测表。
+
+    协整和信号只用两边都有成交的日子。只有一边开市时，已有仓位仍计入开市那边的涨跌，
+    收盘那边的收益记 0，当天不新开仓、也不调 β。股价只为了记账向前填充，不拿填充价重新回归。
+    """
+    warnings: list[str] = []
+    a = pd.Series(a_px, dtype=float).copy()
+    h = pd.Series(h_px, dtype=float).copy()
+    fx_s = pd.Series(fx, dtype=float).copy()
+    a.index = _normalize_index(a.index)
+    h.index = _normalize_index(h.index)
+    fx_s.index = _normalize_index(fx_s.index)
+    a = a[np.isfinite(a) & (a > 0)]
+    h = h[np.isfinite(h) & (h > 0)]
+    a = a[~a.index.duplicated(keep="last")].sort_index()
+    h = h[~h.index.duplicated(keep="last")].sort_index()
+    px = pd.concat({"a_raw": a, "h_raw": h}, axis=1).sort_index()
+    px = px[~px.index.duplicated(keep="last")]
+    start_ts = pd.Timestamp(start).normalize()
+    end_ts = pd.Timestamp(end).normalize()
+    px = px.loc[(px.index >= start_ts) & (px.index <= end_ts)]
+    if px.empty:
+        raise RuntimeError("这个区间里没有行情")
+    px["both_open"] = px["a_raw"].notna() & px["h_raw"].notna()
+    px["a_cny"] = px["a_raw"].ffill()
+    px["h_hkd"] = px["h_raw"].ffill()
+    fx_raw = fx_s.reindex(px.index)
+    fx_aligned = fx_raw.ffill(limit=5)
+    lagged = int((fx_raw.isna() & fx_aligned.notna()).sum())
+    if lagged:
+        warnings.append(f"汇率有 {lagged} 天沿用了此前最多 5 个交易日的牌价。")
+    px["fx"] = fx_aligned
+    px = px.dropna(subset=["a_cny", "h_hkd", "fx"])
+    if px.empty or not bool(px["both_open"].any()):
+        raise RuntimeError("这个区间里没有 A/H 同时开市的交易日")
+    common = int(px["both_open"].sum())
+    one_sided = int((~px["both_open"]).sum())
+    warnings.append(
+        f"含预热的下载区间：同时开市 {common} 天，只有一边开市 {one_sided} 天。"
+        "协整和信号只用同时开市日；已有仓位在单边开市日仍计算开市一边的收益，当天不调仓。"
+    )
+    px["h_cny"] = px["h_hkd"] * px["fx"]
+    px["premium"] = px["a_cny"] / px["h_cny"] - 1.0
+    px["log_a"] = np.log(px["a_cny"])
+    px["log_h"] = np.log(px["h_cny"])
+    px["ret_a"] = px["a_cny"].pct_change().where(px["a_raw"].notna(), 0.0)
+    px["ret_h"] = px["h_cny"].pct_change().where(px["h_raw"].notna(), 0.0)
+    px = px.drop(columns=["a_raw", "h_raw"])
+    px.index.name = "date"
+    return px, warnings
+
+
 def load_pair(
     a_code: str,
     h_code: str,
@@ -166,10 +239,7 @@ def load_pair(
     cache_dir: Path = CACHE_DIR,
     refresh: bool = False,
 ) -> tuple[pd.DataFrame, list[str]]:
-    """对齐两地都开市的交易日，并把 H 股换成人民币。
-
-    start/end 含首尾。两地节假日不一致的日期删掉，不用前值填充股价。
-    """
+    """下载一对 A+H，并把 H 股换成人民币。start/end 含首尾。"""
     warnings: list[str] = []
     a_ticker = a_to_yahoo(a_code)
     h_ticker = h_to_yahoo(h_code)
@@ -187,28 +257,8 @@ def load_pair(
         warnings.append("有一条行情下载失败，图上用的是本地缓存。")
     if "eastmoney" in {a_src, h_src} or "沿用" in a_src or "沿用" in h_src:
         warnings.append("两条腿的复权来源可能不一致，价差水平要谨慎解读。")
-
-    px = pd.concat({"a_cny": a_px, "h_hkd": h_px}, axis=1, join="inner").sort_index()
-    px = px[(px["a_cny"] > 0) & (px["h_hkd"] > 0)]
-    fx_raw = fx.reindex(px.index)
-    fx_aligned = fx_raw.ffill(limit=5)
-    lagged = int((fx_raw.isna() & fx_aligned.notna()).sum())
-    if lagged:
-        warnings.append(f"汇率有 {lagged} 天沿用了此前最多 5 个交易日的牌价。")
-    px["fx"] = fx_aligned
-    px = px.dropna()
-    start_ts = pd.Timestamp(start).normalize()
-    end_ts = pd.Timestamp(end).normalize()
-    px = px.loc[(px.index >= start_ts) & (px.index <= end_ts)]
-    if px.empty:
-        raise RuntimeError("这个区间里没有 A/H 同时开市的交易日")
-    px["h_cny"] = px["h_hkd"] * px["fx"]
-    px["premium"] = px["a_cny"] / px["h_cny"] - 1.0
-    px["log_a"] = np.log(px["a_cny"])
-    px["log_h"] = np.log(px["h_cny"])
-    px["ret_a"] = px["a_cny"].pct_change()
-    px["ret_h"] = px["h_cny"].pct_change()
-    px.index.name = "date"
+    px, align_notes = assemble_pair(a_px, h_px, fx, start, end)
+    warnings.extend(align_notes)
     px.attrs["a_code"] = str(a_code).zfill(6)
     px.attrs["h_code"] = str(h_code).zfill(5)
     return px, warnings

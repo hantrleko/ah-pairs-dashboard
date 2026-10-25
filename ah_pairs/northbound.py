@@ -24,17 +24,29 @@ def _as_dates(values) -> pd.DatetimeIndex:
 
 
 def _cache_path(cache_dir: Path) -> Path:
-    return cache_dir / "northbound.csv"
+    return cache_dir / "northbound.parquet"
+
+
+def _read_flow(path: Path) -> pd.Series:
+    if path.suffix == ".parquet":
+        frame = pd.read_parquet(path)
+        if "date" in frame.columns:
+            frame = frame.set_index("date")
+    else:
+        frame = pd.read_csv(path, index_col=0, parse_dates=True)
+    series = frame.iloc[:, 0].astype(float)
+    series.index = _as_dates(series.index)
+    series.name = "northbound"
+    return series.sort_index()
 
 
 def load_northbound(cache_dir: Path = CACHE_DIR, refresh: bool = False) -> pd.Series:
     path = _cache_path(cache_dir)
-    if path.exists() and not refresh:
-        frame = pd.read_csv(path, index_col=0, parse_dates=True)
-        series = frame.iloc[:, 0].astype(float)
-        series.index = _as_dates(series.index)
-        series.name = "northbound"
-        return series.sort_index()
+    legacy = cache_dir / "northbound.csv"
+    if not refresh and path.exists():
+        return _read_flow(path)
+    if not refresh and legacy.exists():
+        return _read_flow(legacy)
 
     import akshare as ak
 
@@ -47,7 +59,11 @@ def load_northbound(cache_dir: Path = CACHE_DIR, refresh: bool = False) -> pd.Se
     )
     series = series[~series.index.duplicated(keep="last")].sort_index()
     path.parent.mkdir(parents=True, exist_ok=True)
-    series.to_frame("northbound").to_csv(path, encoding="utf-8")
+    frame = series.to_frame("northbound")
+    frame.index.name = "date"
+    tmp = path.with_suffix(".tmp.parquet")
+    frame.to_parquet(tmp)
+    tmp.replace(path)
     return series
 
 

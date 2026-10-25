@@ -20,7 +20,8 @@ def main() -> None:
     parser.add_argument("--start", default="2018-01-01")
     parser.add_argument("--end", default=pd.Timestamp.today().strftime("%Y-%m-%d"))
     parser.add_argument("--hedge", default="rolling", choices=["rolling", "kalman"])
-    parser.add_argument("--no-short-a", action="store_true")
+    parser.add_argument("--allow-short-a", action="store_true", help="允许做空 A 股。默认关闭。")
+    parser.add_argument("--kalman-auto", action="store_true", help="用预热样本的预测误差似然估计卡尔曼 δ")
     args = parser.parse_args()
 
     universe = load_universe()
@@ -31,7 +32,8 @@ def main() -> None:
     h_code = row.iloc[0]["h_code"]
     params = StrategyParams(
         hedge=args.hedge,
-        allow_short_a=not args.no_short_a,
+        allow_short_a=bool(args.allow_short_a),
+        kalman_delta_auto=bool(args.kalman_auto),
         costs=CostParams(),
     )
     start = pd.Timestamp(args.start)
@@ -58,8 +60,12 @@ def main() -> None:
     )
     print(
         f"收益={stats['total_return']:.2%}  夏普={stats['sharpe']:.2f}  "
-        f"回撤={stats['max_drawdown']:.2%}  交易={stats['n_trades']}"
+        f"回撤={stats['max_drawdown']:.2%}  交易={stats['n_trades']}  "
+        f"同时开市={result.get('n_common', stats['n_days'])}  单边开市={result.get('n_one_sided', 0)}"
     )
+    fit = result.get("kalman_fit") or {}
+    if params.hedge == "kalman":
+        print(f"卡尔曼 δ={fit.get('delta', params.kalman_delta)}  {fit.get('message', '')}")
     joh = result["johansen"]
     if joh.get("ok"):
         print(

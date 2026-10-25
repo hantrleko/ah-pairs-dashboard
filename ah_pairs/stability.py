@@ -69,22 +69,64 @@ def stability_grid(
     return pd.DataFrame(rows)
 
 
+def benjamini_hochberg(pvalues, alpha: float = 0.05) -> dict:
+    """Benjamini–Hochberg。返回被拒绝的个数，不是把每个 p 值和 0.05 单独比较。"""
+    p = np.sort(np.asarray(pvalues, dtype=float))
+    p = p[np.isfinite(p)]
+    m = int(len(p))
+    if m == 0:
+        return {"m": 0, "n_reject": 0, "rate": np.nan, "alpha": float(alpha)}
+    k = 0
+    for rank, pvalue in enumerate(p, start=1):
+        if pvalue <= alpha * rank / m:
+            k = rank
+    return {"m": m, "n_reject": int(k), "rate": float(k / m), "alpha": float(alpha)}
+
+
+def window_count_note(n_days: int, lengths: tuple[int, ...] = DEFAULT_LENGTHS, step: int | None = None) -> str:
+    """说明地图上的窗口是怎么数出来的。窗口重叠，次数不是独立样本数。"""
+    if step is None:
+        step = max(21, int(n_days) // 36)
+    parts = []
+    total = 0
+    for length in lengths:
+        if length >= n_days or length < 80:
+            continue
+        ends = list(range(length, n_days + 1, step))
+        if not ends or ends[-1] != n_days:
+            ends.append(n_days)
+        parts.append(f"{int(length)} 日 {len(ends)} 个")
+        total += len(ends)
+    detail = "、".join(parts) if parts else "没有足够长的窗口"
+    return (
+        f"这段有 {int(n_days)} 个价格点。步长 {int(step)} 个交易日，每种长度都包含最后一个终点。"
+        f"按这个设计大约 {total} 个窗口（{detail}）。相邻窗口共用大部分交易日，不能把检验次数当成独立样本。"
+        "下面的 BH 比例把这些 p 值放进 Benjamini–Hochberg，只作参考：窗口重叠，校正既不是严格的独立试验，也不代替 AIC 那一次全样本检验。"
+    )
+
+
 def fragility_report(grid: pd.DataFrame, top: int = 5) -> dict:
     """成立比例、脆弱程度，以及 p 值最高的几个窗口。"""
+    empty = {
+        "n_tests": 0,
+        "reject_rate": np.nan,
+        "fragility": np.nan,
+        "bh_n_reject": 0,
+        "bh_rate": np.nan,
+        "worst": grid,
+    }
     if grid.empty or grid["pvalue"].notna().sum() == 0:
-        return {
-            "n_tests": 0,
-            "reject_rate": np.nan,
-            "fragility": np.nan,
-            "worst": grid,
-        }
+        return empty
     valid = grid.dropna(subset=["pvalue"])
     rate = float(valid["reject_5"].mean())
     worst = valid.sort_values(["pvalue", "length"], ascending=[False, False]).head(top)
+    bh = benjamini_hochberg(valid["pvalue"])
     return {
         "n_tests": int(len(valid)),
         "reject_rate": rate,
         "fragility": float(1.0 - rate),
+        "bh_n_reject": int(bh["n_reject"]),
+        "bh_rate": bh["rate"],
         "worst": worst.reset_index(drop=True),
     }
 

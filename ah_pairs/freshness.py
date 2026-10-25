@@ -33,18 +33,18 @@ def northbound_stops_before(price_end, northbound_end) -> bool:
     return pd.Timestamp(price_end).normalize() > pd.Timestamp(northbound_end).normalize()
 
 
-def _cache_path(ticker: str) -> Path:
+def cache_candidates(ticker: str) -> list[Path]:
     safe = ticker.replace("=", "_").replace("^", "_")
-    return CACHE_DIR / f"{safe}.csv"
+    return [CACHE_DIR / f"{safe}.parquet", CACHE_DIR / f"{safe}.csv"]
 
 
 def cache_written_at(a_code: str, h_code: str) -> str | None:
     """本地行情缓存里最晚的写入时间。没有缓存文件时返回 None。"""
     stamps = []
     for ticker in (a_to_yahoo(a_code), h_to_yahoo(h_code), "HKDCNY=X"):
-        path = _cache_path(ticker)
-        if path.exists():
-            stamps.append(path.stat().st_mtime)
+        for path in cache_candidates(ticker):
+            if path.exists():
+                stamps.append(path.stat().st_mtime)
     if not stamps:
         return None
     return datetime.fromtimestamp(max(stamps)).strftime("%Y-%m-%d %H:%M")

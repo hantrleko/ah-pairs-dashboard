@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+import json
 
 import numpy as np
 import pandas as pd
@@ -24,7 +25,8 @@ class StrategyParams:
     exit_z: float = 0.5
     stop_z: float = 4.0
     kalman_delta: float = 1e-4
-    allow_short_a: bool = True
+    kalman_delta_auto: bool = False
+    allow_short_a: bool = False
     require_positive_beta: bool = True
     fill: str = "next_close"
     beta_band: float = 0.10
@@ -45,6 +47,16 @@ class StrategyParams:
             raise ValueError("卡尔曼状态噪声系数需要为正")
         if self.beta_band < 0:
             raise ValueError("对冲再平衡阈值不能为负")
+
+
+def params_to_json(params: StrategyParams) -> str:
+    return json.dumps(asdict(params), sort_keys=True)
+
+
+def params_from_json(payload: str) -> StrategyParams:
+    raw = json.loads(payload)
+    costs = CostParams(**raw.pop("costs"))
+    return StrategyParams(costs=costs, **raw)
 
 
 def update_position(
@@ -91,12 +103,20 @@ def positions_from_z(
     z: np.ndarray,
     beta: np.ndarray,
     params: StrategyParams,
+    tradable: np.ndarray | None = None,
 ) -> np.ndarray:
-    """每个时点收盘后想持有的方向。还没有推迟到成交日。"""
+    """每个时点收盘后想持有的方向。还没有推迟到成交日。
+
+    tradable 为假的日子不重新读 z，方向保持上一个可交易日的决定。
+    """
     n = len(z)
     target = np.zeros(n, dtype=int)
     held = 0
+    can_trade = np.ones(n, dtype=bool) if tradable is None else np.asarray(tradable, dtype=bool)
     for t in range(n):
+        if not can_trade[t]:
+            target[t] = held
+            continue
         held = update_position(
             held,
             float(z[t]),
@@ -114,16 +134,24 @@ def positions_from_z(
 
 
 def _held_weights(
-    direction: np.ndarray, beta: np.ndarray, beta_band: float
+    direction: np.ndarray,
+    beta: np.ndarray,
+    beta_band: float,
+    tradable: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """方向不变时锁定开仓 beta。偏离超过 beta_band 才调整对冲比率。"""
+    """方向不变时锁定开仓 beta。偏离超过 beta_band 才调整对冲比率。单边开市日不调仓。"""
     n = len(direction)
     w_a = np.zeros(n)
     w_h = np.zeros(n)
     held_a = held_h = 0.0
     held_beta = np.nan
     prev_dir = 0
+    can_trade = np.ones(n, dtype=bool) if tradable is None else np.asarray(tradable, dtype=bool)
     for t in range(n):
+        if not can_trade[t]:
+            w_a[t] = held_a
+            w_h[t] = held_h
+            continue
         dir_t = int(direction[t])
         b = float(beta[t])
         if dir_t == 0 or not np.isfinite(b) or b <= 0:
@@ -140,15 +168,38 @@ def _held_weights(
     return w_a, w_h
 
 
-def _executed_direction(target: np.ndarray, fill: str) -> np.ndarray:
+def _executed_direction(
+    target: np.ndarray,
+    fill: str,
+    tradable: np.ndarray | None = None,
+) -> np.ndarray:
+    """成交只落在可交易日。next_close 等到下一个两边都开市的收盘，不在单边日成交。"""
     n = len(target)
     executed = np.zeros(n, dtype=int)
+    can_trade = np.ones(n, dtype=bool) if tradable is None else np.asarray(tradable, dtype=bool)
     if fill == "same_close":
-        executed[:] = target
+        held = 0
+        for t in range(n):
+            if can_trade[t]:
+                held = int(target[t])
+            executed[t] = held
         return executed
-    if n > 1:
-        executed[1:] = target[:-1]
+    pending = 0
+    held = 0
+    for t in range(n):
+        if not can_trade[t]:
+            executed[t] = held
+            continue
+        held = pending
+        executed[t] = held
+        pending = int(target[t])
     return executed
+
+
+def _tradable(frame: pd.DataFrame) -> np.ndarray:
+    if "both_open" not in frame.columns:
+        return np.ones(len(frame), dtype=bool)
+    return frame["both_open"].fillna(False).to_numpy(dtype=bool)
 
 
 def run_backtest(
@@ -168,13 +219,16 @@ def run_backtest(
     dates = work.index
     n = len(work)
 
-    target = positions_from_z(z, beta, params)
-    direction = _executed_direction(target, params.fill)
+    tradable = _tradable(work)
+    target = positions_from_z(z, beta, params, tradable=tradable)
+    direction = _executed_direction(target, params.fill, tradable=tradable)
     for t in range(n):
+        if not tradable[t]:
+            continue
         use_beta = beta[t]
         if params.require_positive_beta and not (np.isfinite(use_beta) and use_beta > 0):
             direction[t] = 0
-    w_a, w_h = _held_weights(direction, beta, params.beta_band)
+    w_a, w_h = _held_weights(direction, beta, params.beta_band, tradable)
 
     pnl = np.zeros(n)
     cost = np.zeros(n)
@@ -389,6 +443,8 @@ def _performance_stats(
         "total_borrow": float(frame["borrow"].sum()),
         "missing_returns": int(missing_returns),
         "ruined": bool(ruined),
+        "n_common": int(frame["both_open"].fillna(False).sum()) if "both_open" in frame.columns else int(n),
+        "n_one_sided": int((~frame["both_open"].fillna(False)).sum()) if "both_open" in frame.columns else 0,
         "start": frame.index.min(),
         "end": frame.index.max(),
     }
