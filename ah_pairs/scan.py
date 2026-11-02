@@ -64,15 +64,40 @@ def scan_pairs(
 
 
 def write_scan(summary: pd.DataFrame, returns: pd.DataFrame, folder=SCAN_DIR) -> None:
+    import os
+
+    from ah_pairs.paths import DATA_DIR
+
     folder.mkdir(parents=True, exist_ok=True)
     summary.to_parquet(folder / "summary.parquet", index=False)
     returns.to_parquet(folder / "returns.parquet")
+    if os.environ.get("AH_PUBLISH_SCAN") == "1":
+        published = DATA_DIR / "scan_snapshot"
+        published.mkdir(parents=True, exist_ok=True)
+        summary.to_parquet(published / "summary.parquet", index=False)
+        returns.to_parquet(published / "returns.parquet")
 
 
-def read_scan(folder=SCAN_DIR) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    summary_path = folder / "summary.parquet"
-    returns_path = folder / "returns.parquet"
-    summary = pd.read_parquet(summary_path) if summary_path.exists() else None
+def _scan_folders(folder=None):
+    from ah_pairs.paths import DATA_DIR
+
+    if folder is not None:
+        return [folder]
+    return [SCAN_DIR, DATA_DIR / "scan_snapshot"]
+
+
+def read_scan(folder=None) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """先看缓存目录，再看仓库里的 data/scan_snapshot。两边都有时用较新的一份。"""
+    found = []
+    for candidate in _scan_folders(folder):
+        summary_path = candidate / "summary.parquet"
+        if summary_path.exists():
+            found.append((summary_path.stat().st_mtime, candidate))
+    if not found:
+        return None, None
+    chosen = max(found)[1]
+    summary = pd.read_parquet(chosen / "summary.parquet")
+    returns_path = chosen / "returns.parquet"
     returns = pd.read_parquet(returns_path) if returns_path.exists() else None
     return summary, returns
 

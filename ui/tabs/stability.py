@@ -6,9 +6,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from ah_pairs.data import unadjusted_log_columns
 from ah_pairs.i18n import tx
+from ah_pairs.labels import slice_label
 from ah_pairs.plots import hedge_figure, reject_rate_figure, rolling_p_figure, stability_heatmap, static_resid_figure
-from ah_pairs.stability import eg_pvalue, window_count_note
+from ah_pairs.stability import eg_pvalue, window_count_facts
 from ui.cache import cached_stability
 from ui.format import half_life_text, kpis, meta, num, pct, pval, show_chart, show_table, span_frame
 
@@ -48,11 +50,31 @@ def render_stability(page) -> None:
             f"The summary EG p = **{pval(page.eg['pvalue'])}** uses AIC lags on {len(common)} common sessions. The same full window with lag fixed at 1, as in the map, has p = **{pval(lag1)}**. Those are two specifications.",
         )
     )
+    facts = window_count_facts(len(common))
+    detail = tx("、", ", ").join(
+        tx(f"{length} 日 {count} 个", f"{count} windows of {length} days") for length, count in facts["parts"]
+    ) or tx("没有足够长的窗口", "no window is long enough")
     st.caption(
-        window_count_note(len(common))
-        if page.lang != "en"
-        else "Windows step through the common sessions and always include the last endpoint. Overlapping windows are not independent draws. The BH rate is a Benjamini–Hochberg reference, not a q-value from independent trials."
+        tx(
+            f"这段有 {facts['n_days']} 个价格点。步长 {facts['step']} 个交易日，每种长度都包含最后一个终点。按这个设计大约 {facts['total']} 个窗口（{detail}）。相邻窗口共用大部分交易日，不能把检验次数当成独立样本。下面的 BH 比例只作参考：窗口重叠，校正既不是严格的独立试验，也不代替 AIC 那一次全样本检验。",
+            f"This sample has {facts['n_days']} prices. The step is {facts['step']} sessions, and every length includes the last endpoint. That design is about {facts['total']} windows ({detail}). Neighbours share most days, so the count is not an independent sample. The BH rate below is only a reference: the windows overlap, and the adjustment is neither a strict independent-trial correction nor a substitute for the one full-sample AIC test.",
+        )
     )
+    unadj_key = f"{page.picked.a_code}|{page.start_day}|{page.end_day}|unadj"
+    if st.button(tx("比较未复权收盘", "Compare unadjusted closes"), key="load_unadjusted"):
+        try:
+            with st.spinner(tx("下载未复权收盘…", "Downloading unadjusted closes…")):
+                columns = unadjusted_log_columns(page.picked.a_code, page.picked.h_code, common["fx"], common.index)
+            st.session_state["unadj"] = {"key": unadj_key, "frame": columns}
+        except Exception as exc:
+            st.error(tx(f"未复权价格没有下载到：{exc}", f"Unadjusted prices were not downloaded: {exc}"))
+    saved_unadj = st.session_state.get("unadj")
+    if isinstance(saved_unadj, dict) and saved_unadj.get("key") == unadj_key:
+        extra = saved_unadj["frame"].reindex(common.index)
+        common = common.copy()
+        common["log_a_raw"] = extra["log_a_raw"]
+        common["log_h_raw"] = extra["log_h_raw"]
+        st.caption(tx("未复权收盘已对齐到这张表。下面的地图要重新计算，切片里才会出现这一行。Yahoo 的复权价含分红再投资，和港股通税后红利不是同一条价格。", "Unadjusted closes are aligned to this table. Recompute the map to add that row. Yahoo’s adjusted close reinvests dividends and is not the after-tax Stock Connect price."))
     if len(common) < 200:
         st.info(tx("稳定性地图至少需要大约 200 个同时开市日。", "The stability map needs about 200 common sessions."))
         return
@@ -107,8 +129,10 @@ def render_stability(page) -> None:
             chosen = worst.iloc[labels.index(picked_window)]
             st.session_state["chart_focus"] = {"start": str(pd.Timestamp(chosen["start"]).date()), "end": str(pd.Timestamp(chosen["end"]).date())}
             st.rerun()
-    checks = saved["checks"]
-    show = checks.copy()
-    show[tx("滞后 1 阶 p", "Lag-1 p")] = show["pvalue"].map(pval)
-    show[tx("AIC p", "AIC p")] = show["pvalue_aic"].map(pval) if "pvalue_aic" in show.columns else "—"
-    show_table(show[["情形", "天数", tx("滞后 1 阶 p", "Lag-1 p"), tx("AIC p", "AIC p")]])
+    checks = saved["checks"].copy()
+    if "code" in checks.columns:
+        checks["情形"] = checks["code"].map(slice_label)
+    checks[tx("滞后 1 阶 p", "Lag-1 p")] = checks["pvalue"].map(pval)
+    checks[tx("AIC p", "AIC p")] = checks["pvalue_aic"].map(pval) if "pvalue_aic" in checks.columns else "—"
+    checks = checks.rename(columns={"情形": tx("情形", "Slice"), "天数": tx("天数", "Days")})
+    show_table(checks[[tx("情形", "Slice"), tx("天数", "Days"), tx("滞后 1 阶 p", "Lag-1 p"), tx("AIC p", "AIC p")]])

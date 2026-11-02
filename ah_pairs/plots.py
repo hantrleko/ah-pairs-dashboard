@@ -433,7 +433,7 @@ def hedge_figure(frame: pd.DataFrame, active: str | None = None) -> go.Figure:
     return _layout(fig, L("滚动 OLS 与卡尔曼 β", "Rolling OLS and Kalman beta"))
 
 
-def equity_figure(frame: pd.DataFrame) -> go.Figure:
+def equity_figure(frame: pd.DataFrame, oos: pd.Series | None = None) -> go.Figure:
     ret_a = frame["ret_a"].fillna(0.0)
     ret_h = frame["ret_h"].fillna(0.0)
     bh_a = (1.0 + ret_a).cumprod()
@@ -448,7 +448,7 @@ def equity_figure(frame: pd.DataFrame) -> go.Figure:
         shared_xaxes=True,
         vertical_spacing=0.08,
         row_heights=[0.68, 0.32],
-        subplot_titles=("净值", "回撤"),
+        subplot_titles=(L("净值", "Equity"), L("回撤", "Drawdown")),
     )
     fig.add_trace(
         go.Scatter(
@@ -487,6 +487,17 @@ def equity_figure(frame: pd.DataFrame) -> go.Figure:
         row=1,
         col=1,
     )
+    if oos is not None and len(oos):
+        fig.add_trace(
+            go.Scatter(
+                x=oos.index,
+                y=oos.to_numpy(dtype=float),
+                name=L("样本外拼接", "Stitched out of sample"),
+                line=dict(color=GREEN, width=2),
+            ),
+            row=1,
+            col=1,
+        )
     fig.add_trace(
         go.Scatter(
             x=frame.index,

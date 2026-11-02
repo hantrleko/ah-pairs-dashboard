@@ -71,6 +71,27 @@ def h_share_stamp(day, params: CostParams) -> float:
     return 0.001
 
 
+def leg_turnover_parts(
+    prev_w: float,
+    new_w: float,
+    commission: float,
+    stamp_buy: float,
+    stamp_sell: float,
+) -> tuple[float, float]:
+    """返回 (佣金, 印花税)，都是占净值的比例。跨越零轴时先平仓再开仓。"""
+    if prev_w == new_w:
+        return 0.0, 0.0
+    if prev_w * new_w < 0:
+        close_c, close_s = leg_turnover_parts(prev_w, 0.0, commission, stamp_buy, stamp_sell)
+        open_c, open_s = leg_turnover_parts(0.0, new_w, commission, stamp_buy, stamp_sell)
+        return close_c + open_c, close_s + open_s
+    if new_w > prev_w:
+        traded = new_w - prev_w
+        return traded * commission, traded * stamp_buy
+    traded = prev_w - new_w
+    return traded * commission, traded * stamp_sell
+
+
 def leg_turnover_cost(
     prev_w: float,
     new_w: float,
@@ -82,17 +103,35 @@ def leg_turnover_cost(
 
     正权重为多头，负权重为空头。跨越零轴时先平仓再开仓。
     """
-    if prev_w == new_w:
-        return 0.0
-    if prev_w * new_w < 0:
-        return leg_turnover_cost(
-            prev_w, 0.0, commission, stamp_buy, stamp_sell
-        ) + leg_turnover_cost(0.0, new_w, commission, stamp_buy, stamp_sell)
-    if new_w > prev_w:
-        traded = new_w - prev_w
-        return traded * (commission + stamp_buy)
-    traded = prev_w - new_w
-    return traded * (commission + stamp_sell)
+    commission_cost, stamp_cost = leg_turnover_parts(
+        prev_w, new_w, commission, stamp_buy, stamp_sell
+    )
+    return commission_cost + stamp_cost
+
+
+def rebalance_cost_parts(
+    prev_a: float,
+    prev_h: float,
+    new_a: float,
+    new_h: float,
+    day,
+    params: CostParams,
+) -> dict[str, float]:
+    """佣金、印花税和滑点分开。融券费不在这里，它按持仓天数另计。"""
+    a_buy, a_sell = a_share_stamp(day, params)
+    h_stamp = h_share_stamp(day, params)
+    a_commission, a_stamp = leg_turnover_parts(prev_a, new_a, params.a_commission, a_buy, a_sell)
+    h_commission, h_stamp_cost = leg_turnover_parts(
+        prev_h, new_h, params.h_commission, h_stamp, h_stamp
+    )
+    slip = params.slippage * (abs(new_a - prev_a) + abs(new_h - prev_h))
+    return {
+        "a_commission": float(a_commission),
+        "a_stamp": float(a_stamp),
+        "h_commission": float(h_commission),
+        "h_stamp": float(h_stamp_cost),
+        "slippage": float(slip),
+    }
 
 
 def rebalance_cost(
@@ -103,9 +142,4 @@ def rebalance_cost(
     day,
     params: CostParams,
 ) -> float:
-    a_buy, a_sell = a_share_stamp(day, params)
-    h_stamp = h_share_stamp(day, params)
-    cost_a = leg_turnover_cost(prev_a, new_a, params.a_commission, a_buy, a_sell)
-    cost_h = leg_turnover_cost(prev_h, new_h, params.h_commission, h_stamp, h_stamp)
-    slip = params.slippage * (abs(new_a - prev_a) + abs(new_h - prev_h))
-    return cost_a + cost_h + slip
+    return float(sum(rebalance_cost_parts(prev_a, prev_h, new_a, new_h, day, params).values()))

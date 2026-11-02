@@ -1,4 +1,4 @@
-"""北向、南向和恒生 AH 溢价指数。"""
+"""北向、南向和恒生 AH 溢价指数。南向和溢价指数默认只读缓存。"""
 
 from __future__ import annotations
 
@@ -7,32 +7,22 @@ import streamlit as st
 
 from ah_pairs.freshness import northbound_stops_before
 from ah_pairs.i18n import tx
-from ah_pairs.market import describe_market
+from ah_pairs.market import describe_market, read_source
 from ah_pairs.northbound import latest_valid
+from ah_pairs.paths import CACHE_DIR
 from ah_pairs.plots import northbound_figure
-from ui.cache import cached_ah_index, cached_southbound
+from ui.cache import cached_ah_index, cached_southbound, refresh_ah_index_cache, refresh_southbound_cache
 from ui.format import meta, show_chart, show_table, span_frame
 
 
-def _series(loader, error_key: str):
-    if st.session_state.get(error_key):
-        return None, st.session_state[error_key]
-    try:
-        return loader(), ""
-    except Exception as exc:
-        st.session_state[error_key] = str(exc)
-        return None, str(exc)
-
-
-def _block(page, series, error: str, column: str, kind: str, source: str, note: str, error_key: str = "") -> None:
-    if error:
+def _block(page, series, error: str, column: str, kind: str, source: str, note: str) -> None:
+    if error and (series is None or series.dropna().empty):
         st.info(error)
-        if error_key and st.button(tx("再试一次", "Try again"), key=f"retry_{column}"):
-            st.session_state.pop(error_key, None)
-            st.rerun()
         return
+    if error:
+        st.warning(error)
     if series is None or series.dropna().empty:
-        st.info(tx("这条序列是空的。", "This series is empty."))
+        st.info(tx("还没有本地缓存。点上面的更新，才会去下载。", "There is no local cache yet. Use the update button to download it."))
         return
     common = page.common.copy()
     common[column] = series.reindex(common.index)
@@ -79,18 +69,52 @@ def _block(page, series, error: str, column: str, kind: str, source: str, note: 
     st.caption(tx("描述性回归，HAC 标准误，滞后 5 日。不是这条序列造成价差的证据。系数是同一天的关系。", "A descriptive regression with HAC standard errors, 5 lags. It is not evidence that this series causes the spread. The coefficient is same-day."))
 
 
+def _cached_series(loader, refresh, error_key: str, button: str):
+    notice = st.session_state.get(error_key, "")
+    if st.button(button, key=f"refresh_{error_key}"):
+        notice = refresh()
+        if notice:
+            st.session_state[error_key] = notice
+        else:
+            st.session_state.pop(error_key, None)
+            notice = ""
+    series = loader()
+    return series, notice
+
+
+@st.fragment
 def render_market(page) -> None:
     st.markdown(
         tx(
-            "三列都是市场层面的序列，不是这只股票自己的持仓。北向日频已经停止。南向和恒生沪深港通 AH 股溢价指数（HSAHP）用来接上停更之后的对照。指数高于 100 表示样本内 A 股平均更贵。",
-            "All three series are market-wide. None is this stock’s own holding. Daily northbound disclosure has stopped. Southbound flow and the Hang Seng Stock Connect China AH Premium Index (HSAHP) continue the comparison. An index above 100 means A-shares are richer than H-shares on average.",
+            "三列都是市场层面的序列，不是这只股票自己的持仓。北向日频已经停止。南向和恒生沪深港通 AH 股溢价指数（HSAHP）用来接上停更之后的对照。指数高于 100 表示样本内 A 股平均更贵。打开页面只读已经缓存的南向和溢价指数。",
+            "All three series are market-wide. None is this stock’s own holding. Daily northbound disclosure has stopped. Southbound flow and the Hang Seng Stock Connect China AH Premium Index (HSAHP) continue the comparison. An index above 100 means A-shares are richer than H-shares on average. Opening the page only reads the southbound and premium-index cache.",
         )
     )
-    south, south_error = _series(cached_southbound, "south_failed")
-    ah, ah_error = _series(cached_ah_index, "ah_failed")
     st.markdown(tx("**北向资金**", "**Northbound**"))
     _block(page, page.north, page.north_error, "northbound", "bar", tx("东财沪深港通北向合计", "East Money northbound total"), tx("单位亿元，两市合计。", "CNY 100 million, both mainland markets."))
     st.markdown(tx("**南向资金**", "**Southbound**"))
-    _block(page, south, south_error, "southbound", "bar", tx("东财沪深港通南向合计", "East Money southbound total"), tx("单位亿元，港股通合计，不是这只 H 股的持仓。", "CNY 100 million, Stock Connect total, not this H-share’s holding."), "south_failed")
+    south, south_error = _cached_series(
+        cached_southbound,
+        refresh_southbound_cache,
+        "south_failed",
+        tx("更新南向资金", "Update southbound"),
+    )
+    _block(page, south, south_error, "southbound", "bar", tx("东财沪深港通南向合计", "East Money southbound total"), tx("单位亿元，港股通合计，不是这只 H 股的持仓。", "CNY 100 million, Stock Connect total, not this H-share’s holding."))
     st.markdown(tx("**恒生 AH 溢价指数**", "**Hang Seng AH premium index**"))
-    _block(page, ah, ah_error, "hsahp", "line", "HSAHP", tx("回归用的是指数的日变化，不是指数水平。", "The regression uses the daily change in the index, not its level."), "ah_failed")
+    ah, ah_error = _cached_series(
+        cached_ah_index,
+        refresh_ah_index_cache,
+        "ah_failed",
+        tx("更新 AH 溢价指数", "Update the AH premium index"),
+    )
+    source = read_source(CACHE_DIR / "hsahp.parquet")
+    source_text = f" {source}" if source else ""
+    _block(
+        page,
+        ah,
+        ah_error,
+        "hsahp",
+        "line",
+        f"HSAHP{source_text}",
+        tx("回归用的是指数的日变化，不是指数水平。更新时先试 Yahoo，再试东财。", "The regression uses the daily change in the index, not its level. An update tries Yahoo, then East Money."),
+    )

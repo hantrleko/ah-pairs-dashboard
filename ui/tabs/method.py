@@ -13,7 +13,7 @@ def render_method() -> None:
     st.markdown(
         tx(
             """
-**价格。** A 股、H 股用复权收盘价。H 股乘以港元兑人民币。协整、β 和 z 只在两边都有成交的日子上估计。单边开市日把已有仓位按开市一边盯市，停市一边收益记 0，当天不新开仓、也不调 β。汇率最多向前填 5 个交易日。
+**价格。** A 股、H 股用复权收盘价。Yahoo 这条含分红再投资，东财回退用前复权。港股通持有 H 股要缴红利税，复权价不是税后可交易价格。稳定性页可以另下一份未复权收盘，看协整结论变不变。H 股乘以港元兑人民币。协整、β 和 z 只在两边都有成交的日子上估计。单边开市日把已有仓位按开市一边盯市，停市一边收益记 0，当天不新开仓、也不调 β。汇率最多向前填 5 个交易日。
 
 **协整。** Engle–Granger 的原假设是「没有协整」。回归是 `log A = α + β log H + e`，滞后用 AIC。p 值是 MacKinnon 协整 p 值。残差 ADF 用了同一段残差，会偏乐观，不能代替 EG p 值。Johansen 迹检验含常数项。半衰期来自 AR(1)，只在 0 < φ < 1 时有限。
 
@@ -25,9 +25,11 @@ def render_method() -> None:
 
 **稳定性。** 地图的滞后固定为 1 阶，和摘要页 AIC 不是同一次检验。窗口按步长滑动并且互相重叠，检验次数不是独立样本数。BH 比例是 Benjamini–Hochberg 的参考，不是独立试验的 q 值。
 
-**Walk-forward。** 样本跨过三个日历年并且足够长时，训练段逐年变长，下一年做验证。每一折同时选开仓和平仓阈值。样本不够就只切成前后两半。验证段不参与挑选。
+**Walk-forward。** 样本跨过三个日历年并且足够长时，训练段逐年变长，下一年做验证。每一折同时选开仓和平仓阈值。样本不够就只切成前后两半。验证段不参与挑选。各折验证段的日收益会接成一条样本外净值。这一步在回测页点按钮后才计算。
 
-**夏普。** 点估计是日收益均值除以标准差再乘 √252，无风险利率按 0。区间是区块自助法。PSR 是这组夏普大于 0 的概率。压缩夏普再把阈值搜索的次数算进去。它们都不是获利概率。
+**夏普。** 年数是第一根和最后一根 K 线的日历跨度除以 365.25。年化因子是这段行数除以这个年数，不再固定乘 √252。只在同时开市日上重算的夏普单独列出。无风险利率按 0。区间用同一个年化因子做区块自助法。PSR 是未年化夏普大于 0 的概率。压缩夏普再把开仓阈值的搜索次数算进去。它们都不是获利概率。融券费仍按一年 252 天计提。
+
+**成本。** 佣金、印花税、滑点和融券费分开。方向变化那天记入开平仓，方向不变、只改 β 的记入再平衡。
 
 **多标的。** 页面上的四只和大约十二只是现算。全部股票池用 `python -m ah_pairs.scan --all` 写到缓存目录，页面只读那份 parquet。等风险组合用各对策略日收益的滚动波动倒数，权重滞后一天。
 
@@ -36,7 +38,7 @@ def render_method() -> None:
 **不要读成什么。** 样本内协整不保证以后还在。A/H 不能转换。北向是两市合计，日频止于 2024-08-16。南向和恒生 AH 溢价指数也是市场序列，不是这只股票的持仓，回归只描述同一天是否同向。
             """,
             """
-**Prices.** Adjusted closes. The H-share is multiplied by the yuan price of one Hong Kong dollar. Cointegration, beta and z use only sessions when both markets traded. On a one-sided day an existing position is marked on the open leg, the closed leg earns zero, and there is no new trade or beta change. The FX rate is carried forward at most five sessions.
+**Prices.** Adjusted closes. Yahoo reinvests dividends; the East Money fallback is a forward adjustment. Stock Connect holders of H shares pay dividend tax, so the adjusted close is not an after-tax tradable price. The stability page can download unadjusted closes and rerun the check. The H-share is multiplied by the yuan price of one Hong Kong dollar. Cointegration, beta and z use only sessions when both markets traded. On a one-sided day an existing position is marked on the open leg, the closed leg earns zero, and there is no new trade or beta change. The FX rate is carried forward at most five sessions.
 
 **Cointegration.** The Engle–Granger null is “no cointegration”. The regression is `log A = α + β log H + e`, with AIC lags. The p-value is MacKinnon’s cointegration p-value. A residual ADF uses residuals from that same sample, so it is optimistic and must not replace the EG p-value. The Johansen trace test includes a constant. The half-life is an AR(1) and is finite only when 0 < φ < 1.
 
@@ -48,9 +50,11 @@ def render_method() -> None:
 
 **Stability.** The map fixes the lag at 1. The summary EG test uses AIC. Those are different specifications. Windows overlap, so the number of tests is not an independent sample size. The BH rate is a Benjamini–Hochberg reference, not a q-value from independent trials.
 
-**Walk-forward.** When the sample covers three calendar years and is long enough, training expands by year and the next year is the validation slice. Each fold picks both the entry and the exit threshold. Shorter samples use one half-split. Validation does not choose the thresholds.
+**Walk-forward.** When the sample covers three calendar years and is long enough, training expands by year and the next year is the validation slice. Each fold picks both the entry and the exit threshold. Shorter samples use one half-split. Validation does not choose the thresholds. The validation returns are stitched into one out-of-sample equity curve. The backtest page computes this when you press the button.
 
-**Sharpe.** The point estimate is the mean daily return over its standard deviation, times √252, with a zero risk-free rate. The interval is a block bootstrap. The PSR is the probability that this Sharpe exceeds zero. The deflated Sharpe also counts how many thresholds were searched. None of these is the probability of making money.
+**Sharpe.** Years are the calendar span from the first bar to the last, divided by 365.25. The annualization factor is the number of rows divided by those years, not a fixed √252. A second Sharpe uses common sessions only. The risk-free rate is zero. The interval is a block bootstrap with the same factor. The PSR is the probability that the non-annualized Sharpe exceeds zero. The deflated Sharpe also counts how many entry thresholds were searched. None of these is the probability of making money. Borrow still accrues on a 252-day year.
+
+**Costs.** Commission, stamp, slippage and borrow are shown separately. A day that changes direction is an open or a close. A day that keeps the direction and only moves beta is a rebalance.
 
 **Several pairs.** The four-name and twelve-name tables are computed on demand. The full universe is an offline job, `python -m ah_pairs.scan --all`, written into the cache directory. The page only reads that parquet. The equal-risk book uses inverse rolling volatility of each pair’s strategy return, lagged one day.
 

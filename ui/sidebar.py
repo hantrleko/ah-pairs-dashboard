@@ -13,6 +13,32 @@ from ui.cache import cached_universe
 from ui.format import QUICK
 
 
+def _initial_dates():
+    fallback = (pd.Timestamp("2018-01-01").date(), pd.Timestamp.today().date())
+    if "applied_dates" in st.session_state:
+        return st.session_state["applied_dates"]
+    try:
+        start = pd.Timestamp(st.query_params.get("start")).date()
+        end = pd.Timestamp(st.query_params.get("end")).date()
+    except (TypeError, ValueError):
+        return fallback
+    if start <= end:
+        return start, end
+    return fallback
+
+
+def _sync_query(pair: str, lang: str, start, end) -> None:
+    desired = {
+        "pair": str(pair),
+        "lang": str(lang),
+        "start": str(pd.Timestamp(start).date()),
+        "end": str(pd.Timestamp(end).date()),
+    }
+    current = {key: st.query_params.get(key) for key in desired}
+    if current != desired:
+        st.query_params.update(desired)
+
+
 def _bps(label: str, default: float, key: str) -> float:
     return st.number_input(label, min_value=0.0, max_value=50.0, value=default, step=0.5, key=key) / 10_000
 
@@ -40,7 +66,8 @@ def render_sidebar(logo: str) -> dict:
     labels = {row.a_code: f"{row.name}   {row.a_code} / {row.h_code}" for row in universe.itertuples(index=False)}
     codes = universe["a_code"].tolist()
     if "pair_select" not in st.session_state or st.session_state["pair_select"] not in codes:
-        st.session_state["pair_select"] = "601318" if "601318" in codes else codes[0]
+        requested = str(st.query_params.get("pair", "")).zfill(6)
+        st.session_state["pair_select"] = requested if requested in codes else ("601318" if "601318" in codes else codes[0])
     left, right = st.columns(2)
     for column, pairs in ((left, QUICK[:2]), (right, QUICK[2:])):
         with column:
@@ -60,7 +87,7 @@ def render_sidebar(logo: str) -> dict:
     with st.form("params_form"):
         date_range = st.date_input(
             tx("评估区间", "Evaluation window"),
-            value=(pd.Timestamp("2018-01-01").date(), pd.Timestamp.today().date()),
+            value=_initial_dates(),
         )
         st.caption(tx("区间之前的行情只用来预热 beta、z，以及卡尔曼 δ。", "Prices before this window warm up beta, z, and the Kalman delta."))
         st.header(tx("信号", "Signal"))
@@ -164,6 +191,7 @@ def render_sidebar(logo: str) -> dict:
     st.markdown("[EF Lab](https://eugenefinance.tech)")
     st.markdown("[GitHub](https://github.com/hantrleko/ah-pairs-dashboard)")
     start_day, end_day = st.session_state["applied_dates"]
+    _sync_query(a_code, lang, start_day, end_day)
     return {
         "universe": universe,
         "picked": picked,

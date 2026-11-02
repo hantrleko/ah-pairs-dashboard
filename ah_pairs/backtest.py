@@ -13,7 +13,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from ah_pairs.costs import CostParams, rebalance_cost
+from ah_pairs.costs import CostParams, rebalance_cost_parts
 
 
 @dataclass
@@ -57,6 +57,69 @@ def params_from_json(payload: str) -> StrategyParams:
     raw = json.loads(payload)
     costs = CostParams(**raw.pop("costs"))
     return StrategyParams(costs=costs, **raw)
+
+
+def signal_token(params: StrategyParams) -> str:
+    """只包含会改变 β 和 z 的字段。开仓阈值和成本不在这里。"""
+    payload = {
+        "hedge": params.hedge,
+        "hedge_window": int(params.hedge_window),
+        "z_window": int(params.z_window),
+        "kalman_delta": float(params.kalman_delta),
+        "kalman_delta_auto": bool(params.kalman_delta_auto),
+    }
+    return json.dumps(payload, sort_keys=True)
+
+
+def params_from_signal_token(payload: str) -> StrategyParams:
+    raw = json.loads(payload)
+    return StrategyParams(
+        hedge=raw["hedge"],
+        hedge_window=int(raw["hedge_window"]),
+        z_window=int(raw["z_window"]),
+        kalman_delta=float(raw["kalman_delta"]),
+        kalman_delta_auto=bool(raw["kalman_delta_auto"]),
+        costs=CostParams(),
+    )
+
+
+def trade_token(params: StrategyParams) -> str:
+    """开平仓、成交时点和成本。β 已经算好之后，只改这些不必重估协整。"""
+    payload = {
+        "entry_z": float(params.entry_z),
+        "exit_z": float(params.exit_z),
+        "stop_z": float(params.stop_z),
+        "allow_short_a": bool(params.allow_short_a),
+        "require_positive_beta": bool(params.require_positive_beta),
+        "fill": params.fill,
+        "beta_band": float(params.beta_band),
+        "costs": asdict(params.costs),
+    }
+    return json.dumps(payload, sort_keys=True)
+
+
+def params_from_trade_token(payload: str) -> StrategyParams:
+    raw = json.loads(payload)
+    costs = CostParams(**raw.pop("costs"))
+    return StrategyParams(costs=costs, **raw)
+
+
+def sample_clock(index) -> dict:
+    """年数用首尾日历跨度，不用「行数 / 252」。
+
+    并集日历一年大约 260 多行。若仍除以 252，年数会被抬高，年化收益和换手会被压低。
+    """
+    idx = pd.DatetimeIndex(index)
+    n = len(idx)
+    if n < 2:
+        return {"years": np.nan, "bars_per_year": 252.0, "span_days": 0}
+    span_days = max(int((idx.max().normalize() - idx.min().normalize()).days), 1)
+    years = span_days / 365.25
+    return {
+        "years": float(years),
+        "bars_per_year": float(n / years),
+        "span_days": int(span_days),
+    }
 
 
 def update_position(
@@ -234,6 +297,10 @@ def run_backtest(
     cost = np.zeros(n)
     borrow = np.zeros(n)
     gross = np.zeros(n)
+    part_names = ("a_commission", "a_stamp", "h_commission", "h_stamp", "slippage")
+    part_arr = {name: np.zeros(n) for name in part_names}
+    cost_rebalance = np.zeros(n)
+    cost_turnover = np.zeros(n)
     missing = 0
     ruined = False
     day_count = params.costs.trading_days
@@ -256,7 +323,15 @@ def run_backtest(
                 borrow_t += -prev_a * params.costs.a_borrow_annual / day_count
             if prev_h < 0:
                 borrow_t += -prev_h * params.costs.h_borrow_annual / day_count
-        cost_t = rebalance_cost(prev_a, prev_h, w_a[t], w_h[t], dates[t], params.costs)
+        part = rebalance_cost_parts(prev_a, prev_h, w_a[t], w_h[t], dates[t], params.costs)
+        cost_t = float(sum(part.values()))
+        for name in part_names:
+            part_arr[name][t] = part[name]
+        same_direction = t > 0 and int(direction[t]) == int(direction[t - 1]) and int(direction[t]) != 0
+        if same_direction:
+            cost_rebalance[t] = cost_t
+        else:
+            cost_turnover[t] = cost_t
         gross[t] = gross_t
         borrow[t] = borrow_t
         cost[t] = cost_t
@@ -285,6 +360,10 @@ def run_backtest(
     work["ret_gross"] = gross
     work["borrow"] = borrow
     work["cost"] = cost
+    for name in part_names:
+        work[f"cost_{name}"] = part_arr[name]
+    work["cost_rebalance"] = cost_rebalance
+    work["cost_turnover"] = cost_turnover
     work["ret_strat"] = pnl
     work["equity"] = equity
     work["drawdown"] = drawdown
@@ -403,14 +482,26 @@ def _performance_stats(
     rets = rets[np.isfinite(rets)]
     equity = frame["equity"].to_numpy(dtype=float)
     n = len(frame)
-    years = n / 252.0 if n else np.nan
+    clock = sample_clock(frame.index)
+    years = clock["years"]
+    ann = clock["bars_per_year"] if np.isfinite(clock["bars_per_year"]) and clock["bars_per_year"] > 0 else 252.0
     end_equity = float(equity[-1]) if n else np.nan
-    if n > 1 and end_equity > 0 and years > 0:
+    if n > 1 and end_equity > 0 and np.isfinite(years) and years > 0:
         cagr = float(end_equity ** (1.0 / years) - 1.0)
     else:
         cagr = np.nan
     vol = float(np.std(rets, ddof=1)) if len(rets) > 2 else np.nan
-    sharpe = float(np.mean(rets) / vol * np.sqrt(252.0)) if vol and vol > 0 else np.nan
+    sharpe = float(np.mean(rets) / vol * np.sqrt(ann)) if vol and vol > 0 else np.nan
+    sharpe_common = sharpe
+    if "both_open" in frame.columns and np.isfinite(years) and years > 0:
+        mask = frame["both_open"].fillna(False).to_numpy(dtype=bool)
+        common_rets = frame["ret_strat"].to_numpy(dtype=float)[mask]
+        common_rets = common_rets[np.isfinite(common_rets)]
+        if len(common_rets) > 2:
+            common_vol = float(np.std(common_rets, ddof=1))
+            common_ann = len(common_rets) / float(years)
+            if common_vol > 0 and common_ann > 0:
+                sharpe_common = float(np.mean(common_rets) / common_vol * np.sqrt(common_ann))
     max_dd = float(np.nanmin(frame["drawdown"])) if n else np.nan
     dw = frame["w_a"].diff().abs().fillna(frame["w_a"].abs())
     dw = dw + frame["w_h"].diff().abs().fillna(frame["w_h"].abs())
@@ -428,8 +519,11 @@ def _performance_stats(
         "years": float(years) if np.isfinite(years) else np.nan,
         "total_return": float(end_equity - 1.0) if np.isfinite(end_equity) else np.nan,
         "cagr": cagr,
-        "vol": float(vol * np.sqrt(252.0)) if np.isfinite(vol) else np.nan,
+        "vol": float(vol * np.sqrt(ann)) if np.isfinite(vol) else np.nan,
         "sharpe": sharpe,
+        "sharpe_common": sharpe_common,
+        "bars_per_year": float(ann),
+        "span_days": int(clock["span_days"]),
         "max_drawdown": max_dd,
         "calmar": float(cagr / abs(max_dd)) if np.isfinite(cagr) and np.isfinite(max_dd) and max_dd < 0 else np.nan,
         "turnover": turnover,
@@ -441,6 +535,13 @@ def _performance_stats(
         "exposure": float((frame["position"] != 0).mean()) if n else np.nan,
         "total_cost": float(frame["cost"].sum()),
         "total_borrow": float(frame["borrow"].sum()),
+        "cost_a_commission": float(frame["cost_a_commission"].sum()) if "cost_a_commission" in frame.columns else 0.0,
+        "cost_a_stamp": float(frame["cost_a_stamp"].sum()) if "cost_a_stamp" in frame.columns else 0.0,
+        "cost_h_commission": float(frame["cost_h_commission"].sum()) if "cost_h_commission" in frame.columns else 0.0,
+        "cost_h_stamp": float(frame["cost_h_stamp"].sum()) if "cost_h_stamp" in frame.columns else 0.0,
+        "cost_slippage": float(frame["cost_slippage"].sum()) if "cost_slippage" in frame.columns else 0.0,
+        "cost_turnover": float(frame["cost_turnover"].sum()) if "cost_turnover" in frame.columns else 0.0,
+        "cost_rebalance": float(frame["cost_rebalance"].sum()) if "cost_rebalance" in frame.columns else 0.0,
         "missing_returns": int(missing_returns),
         "ruined": bool(ruined),
         "n_common": int(frame["both_open"].fillna(False).sum()) if "both_open" in frame.columns else int(n),
@@ -458,8 +559,8 @@ def later_window_performance(frame: pd.DataFrame, trades: pd.DataFrame) -> dict:
     rets = part["ret_strat"].fillna(0.0)
     equity = (1.0 + rets).cumprod()
     end_equity = float(equity.iloc[-1])
-    years = len(part) / 252.0
-    cagr = float(end_equity ** (1.0 / years) - 1.0) if years > 0 and end_equity > 0 else np.nan
+    years = sample_clock(part.index)["years"]
+    cagr = float(end_equity ** (1.0 / years) - 1.0) if np.isfinite(years) and years > 0 and end_equity > 0 else np.nan
     start = part.index.min()
     closed = trades[trades["closed"]] if len(trades) else trades
     if len(closed):
@@ -492,10 +593,16 @@ def contrast_costs(frame: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
     )
     slip = replace(params.costs, slippage=float(params.costs.slippage) + 0.001)
     rows = []
-    for name, costs in (("当前成本", params.costs), ("不计成本", zero), ("滑点再加 10 bps", slip)):
+    cases = (
+        ("current", "当前成本", params.costs),
+        ("zero", "不计成本", zero),
+        ("slip10", "滑点再加 10 bps", slip),
+    )
+    for code, name, costs in cases:
         _work, _trades, stats = run_backtest(frame, replace(params, costs=costs))
         rows.append(
             {
+                "code": code,
                 "情形": name,
                 "净收益": stats["total_return"],
                 "夏普": stats["sharpe"],

@@ -36,11 +36,15 @@ def portfolio_summary(returns: pd.DataFrame, lookback: int = 60) -> dict:
     active = series.loc[inverse_vol_weights(returns.fillna(0.0), lookback).sum(axis=1) > 0]
     if len(active) < 30:
         return {"ok": False, "message": "有效重叠不足 30 天，没有计算等风险组合。"}
+    from ah_pairs.backtest import sample_clock
+
     equity = (1.0 + active).cumprod()
     end_equity = float(equity.iloc[-1])
-    years = len(active) / 252.0
+    clock = sample_clock(active.index)
+    years = clock["years"]
+    ann = clock["bars_per_year"] if np.isfinite(clock["bars_per_year"]) else 252.0
     vol = float(active.std(ddof=1))
-    sharpe = float(active.mean() / vol * np.sqrt(252.0)) if vol > 0 else np.nan
+    sharpe = float(active.mean() / vol * np.sqrt(ann)) if vol > 0 else np.nan
     cagr = float(end_equity ** (1.0 / years) - 1.0) if years > 0 and end_equity > 0 else np.nan
     drawdown = equity / equity.cummax() - 1.0
     return {

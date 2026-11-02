@@ -16,8 +16,12 @@ jobs:
         run: pip install -r requirements.txt
       - name: Scan the full A+H universe
         run: python -m ah_pairs.scan --all --start 2018-01-01
+        env:
+          AH_PUBLISH_SCAN: "1"
       - uses: actions/upload-artifact@v4
         with:
           name: ah-scan
-          path: data/cache/scan
+          path: |
+            data/cache/scan
+            data/scan_snapshot
           if-no-files-found: error

@@ -73,17 +73,25 @@ def _cache_covers(series: pd.Series, today: pd.Timestamp | None = None) -> bool:
 
 
 def _yahoo_close(ticker: str) -> pd.Series:
+    import socket
+
     import yfinance as yf
 
     end = (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    downloaded = yf.download(
-        ticker,
-        start=HISTORY_START,
-        end=end,
-        auto_adjust=True,
-        progress=False,
-        threads=False,
-    )
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(20)
+    try:
+        downloaded = yf.download(
+            ticker,
+            start=HISTORY_START,
+            end=end,
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+            timeout=20,
+        )
+    finally:
+        socket.setdefaulttimeout(old_timeout)
     if downloaded is None or downloaded.empty:
         return pd.Series(dtype=float)
     if isinstance(downloaded.columns, pd.MultiIndex):
@@ -148,6 +156,8 @@ def get_close(
         fresh = pd.Series(dtype=float)
         yahoo_error = str(exc)
     source = "yahoo"
+    if fresh.empty and not cached.empty and not refresh:
+        return cached, "行情下载失败，沿用本地缓存"
     if fresh.empty and kind in {"a", "h"} and code:
         try:
             fresh = _eastmoney_close(kind, code)
@@ -209,6 +219,7 @@ def assemble_pair(a_px, h_px, fx, start, end) -> tuple[pd.DataFrame, list[str]]:
     fx_aligned = fx_raw.ffill(limit=5)
     lagged = int((fx_raw.isna() & fx_aligned.notna()).sum())
     if lagged:
+        warnings.append(f"meta:fx_lag:{lagged}")
         warnings.append(f"汇率有 {lagged} 天沿用了此前最多 5 个交易日的牌价。")
     px["fx"] = fx_aligned
     px = px.dropna(subset=["a_cny", "h_hkd", "fx"])
@@ -216,6 +227,7 @@ def assemble_pair(a_px, h_px, fx, start, end) -> tuple[pd.DataFrame, list[str]]:
         raise RuntimeError("这个区间里没有 A/H 同时开市的交易日")
     common = int(px["both_open"].sum())
     one_sided = int((~px["both_open"]).sum())
+    warnings.append(f"meta:sessions:{common}:{one_sided}")
     warnings.append(
         f"含预热的下载区间：同时开市 {common} 天，只有一边开市 {one_sided} 天。"
         "协整和信号只用同时开市日；已有仓位在单边开市日仍计算开市一边的收益，当天不调仓。"
@@ -250,15 +262,85 @@ def load_pair(
         h_ticker, cache_dir, kind="h", code=h_code, refresh=refresh
     )
     fx, fx_src = get_fx(cache_dir, refresh=refresh)
+    warnings.append(f"meta:src:a:{a_src}")
+    warnings.append(f"meta:src:h:{h_src}")
+    warnings.append(f"meta:src:fx:{fx_src}")
     warnings.append(f"A股来源：{a_src}")
     warnings.append(f"H股来源：{h_src}")
     warnings.append(f"汇率来源：{fx_src}")
     if "失败" in a_src or "失败" in h_src or "失败" in fx_src:
+        warnings.append("meta:download_failed:1")
         warnings.append("有一条行情下载失败，图上用的是本地缓存。")
     if "eastmoney" in {a_src, h_src} or "沿用" in a_src or "沿用" in h_src:
+        warnings.append("meta:adjust_mismatch:1")
         warnings.append("两条腿的复权来源可能不一致，价差水平要谨慎解读。")
     px, align_notes = assemble_pair(a_px, h_px, fx, start, end)
     warnings.extend(align_notes)
     px.attrs["a_code"] = str(a_code).zfill(6)
     px.attrs["h_code"] = str(h_code).zfill(5)
     return px, warnings
+
+
+def unadjusted_path(cache_dir: Path, ticker: str) -> Path:
+    safe = ticker.replace("=", "_").replace("^", "_")
+    return cache_dir / f"{safe}.unadj.parquet"
+
+
+def load_unadjusted_close(
+    ticker: str,
+    cache_dir: Path = CACHE_DIR,
+    refresh: bool = False,
+) -> pd.Series:
+    """未复权收盘，只给稳定性对照。主回测仍用复权价。"""
+    path = unadjusted_path(cache_dir, ticker)
+    if path.exists() and not refresh:
+        return _read_series(path)
+    import yfinance as yf
+
+    end = (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    downloaded = yf.download(
+        ticker,
+        start=HISTORY_START,
+        end=end,
+        auto_adjust=False,
+        progress=False,
+        threads=False,
+        timeout=20,
+    )
+    if downloaded is None or downloaded.empty or "Close" not in downloaded.columns:
+        raise RuntimeError(f"没有下载到 {ticker} 的未复权收盘")
+    close = downloaded["Close"]
+    series = close.iloc[:, 0] if isinstance(close, pd.DataFrame) else close
+    series = pd.Series(series.to_numpy(dtype=float), index=_normalize_index(series.index))
+    series = series[~series.index.duplicated(keep="last")].sort_index().dropna()
+    if series.empty:
+        raise RuntimeError(f"没有下载到 {ticker} 的未复权收盘")
+    _write_series(path, series)
+    return series
+
+
+def unadjusted_log_columns(
+    a_code: str,
+    h_code: str,
+    fx,
+    index,
+    cache_dir: Path = CACHE_DIR,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """按主表的日期对齐未复权对数价格。H 股仍乘同一条汇率。"""
+    a = load_unadjusted_close(a_to_yahoo(a_code), cache_dir, refresh=refresh)
+    h = load_unadjusted_close(h_to_yahoo(h_code), cache_dir, refresh=refresh)
+    frame = pd.DataFrame(index=pd.DatetimeIndex(index))
+    a_px = a.reindex(frame.index).ffill()
+    h_px = h.reindex(frame.index).ffill()
+    fx_s = pd.Series(fx, dtype=float)
+    fx_s.index = _normalize_index(fx_s.index)
+    fx_aligned = fx_s.reindex(frame.index).ffill()
+    h_cny = h_px * fx_aligned
+    return pd.DataFrame(
+        {
+            "log_a_raw": np.log(a_px.where(a_px > 0)),
+            "log_h_raw": np.log(h_cny.where(h_cny > 0)),
+        },
+        index=frame.index,
+    )

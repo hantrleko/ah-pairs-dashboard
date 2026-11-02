@@ -10,12 +10,13 @@ import pandas as pd
 import streamlit as st
 
 from ah_pairs.analysis import warmup_start
-from ah_pairs.backtest import params_to_json
+from ah_pairs.backtest import signal_token, trade_token
 from ah_pairs.data import load_pair
 from ah_pairs.freshness import cache_written_at, northbound_stops_before, price_is_stale
 from ah_pairs.i18n import set_lang, tx
 from ah_pairs.northbound import latest_valid
-from ui.cache import cached_analysis, cached_northbound, cached_pair
+from ah_pairs.notes import parse_notes
+from ui.cache import cached_alt_beta, cached_backtest, cached_northbound, cached_pair, cached_signals
 from ui.format import kpis, pct, pval, span_frame, tone
 from ui.sidebar import render_sidebar
 from ui.style import inject_css
@@ -32,7 +33,8 @@ from ui.tabs import (
 
 st.set_page_config(page_title="EF Lab | A+H", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 if "lang" not in st.session_state:
-    st.session_state["lang"] = "zh"
+    requested = st.query_params.get("lang")
+    st.session_state["lang"] = requested if requested in {"zh", "zh-Hant", "en"} else "zh"
 set_lang(st.session_state["lang"])
 inject_css()
 LOGO = str(Path(__file__).resolve().parent / "assets" / "eugene-finance-logo.jpg")
@@ -48,14 +50,14 @@ with title_col:
         tx(
             """
 <div class="brand">
-  <p class="kicker">V1.1 · EUGENE FINANCE</p>
+  <p class="kicker">V1.2 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H 股协整配对交易研究看板</h1>
   <p class="subtitle">Interactive Cointegration &amp; Dynamic Pairs Trading Lab · 仅供学习与研究，不构成投资建议</p>
 </div>
             """,
             """
 <div class="brand">
-  <p class="kicker">V1.1 · EUGENE FINANCE</p>
+  <p class="kicker">V1.2 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H cointegration and pairs research</h1>
   <p class="subtitle">For study and research. Not investment advice.</p>
 </div>
@@ -72,7 +74,9 @@ if choice["reload"]:
     try:
         load_pair(picked.a_code, picked.h_code, "2010-01-01", str(end_day), refresh=True)
         cached_pair.clear()
-        cached_analysis.clear()
+        cached_signals.clear()
+        cached_backtest.clear()
+        cached_alt_beta.clear()
     except Exception as exc:
         st.error(tx(f"重新下载失败：{exc}", f"Download failed: {exc}"))
 
@@ -87,15 +91,19 @@ except Exception as exc:
 
 try:
     with st.spinner(tx("读取行情并计算协整与回测…", "Loading prices and computing the backtest…")):
-        notes, result = cached_analysis(
+        signal_key = signal_token(params)
+        notes, prepared = cached_signals(
             picked.a_code,
             picked.h_code,
             warm,
             str(end_day),
             str(pd.Timestamp(start_day).date()),
-            params_to_json(params),
+            signal_key,
             north_key,
         )
+        frame_bt, trades, stats, sensitivity = cached_backtest(prepared["frame"], trade_token(params))
+    result = dict(prepared)
+    result.update(frame=frame_bt, trades=trades, stats=stats, sensitivity=sensitivity, params=params)
 except Exception as exc:
     st.error(str(exc))
     st.stop()
@@ -103,17 +111,9 @@ except Exception as exc:
 frame = result["frame"]
 eg = result["eg"]
 stats = result["stats"]
-sources = {}
-extra_notes = []
-for note in notes:
-    if note.startswith("A股来源："):
-        sources["a"] = note.split("：", 1)[1]
-    elif note.startswith("H股来源："):
-        sources["h"] = note.split("：", 1)[1]
-    elif note.startswith("汇率来源："):
-        sources["fx"] = note.split("：", 1)[1]
-    else:
-        extra_notes.append(note)
+parsed = parse_notes(notes)
+sources = parsed["sources"]
+note_meta = parsed["meta"]
 last_px = frame.index.max()
 price_stale = price_is_stale(last_px, end_day, pd.Timestamp.today())
 nb_last = latest_valid(north) if north is not None else None
@@ -131,7 +131,7 @@ st.markdown(
         f"""
 <div class="mast">
   <div>
-    <p class="kicker">V1.1 · 这一对</p>
+    <p class="kicker">V1.2 · 这一对</p>
     <p class="pair-name">{picked["name"]}</p>
     <p class="meta">{picked.a_code} · {picked.h_code} · {len(common)} 个同时开市日，另有 {one_sided} 天只有一边开市。协整不用这些单边日；已有仓位仍计入开市一边的涨跌。</p>
   </div>
@@ -151,7 +151,7 @@ st.markdown(
         f"""
 <div class="mast">
   <div>
-    <p class="kicker">V1.1 · this pair</p>
+    <p class="kicker">V1.2 · this pair</p>
     <p class="pair-name">{picked["name"]}</p>
     <p class="meta">{picked.a_code} · {picked.h_code} · {len(common)} common sessions, plus {one_sided} one-sided days. Cointegration ignores those days; an open position still earns the side that traded.</p>
   </div>
@@ -179,8 +179,23 @@ if price_stale:
         ),
         unsafe_allow_html=True,
     )
-for note in extra_notes:
-    st.caption(note)
+if note_meta.get("fx_lag"):
+    lagged = int(note_meta["fx_lag"])
+    st.caption(tx(f"汇率有 {lagged} 天沿用了此前最多 5 个交易日的牌价。", f"The exchange rate was carried forward for {lagged} days, at most five sessions."))
+if "download_common" in note_meta:
+    st.caption(
+        tx(
+            f"含预热的下载区间：同时开市 {note_meta['download_common']} 天，只有一边开市 {note_meta['download_one_sided']} 天。协整和信号只用同时开市日；已有仓位在单边开市日仍计算开市一边的收益，当天不调仓。",
+            f"Download window, including warm-up: {note_meta['download_common']} common sessions and {note_meta['download_one_sided']} one-sided days. Cointegration and signals use common sessions. An open position still earns the side that traded, and that day does not rebalance.",
+        )
+    )
+if note_meta.get("download_failed"):
+    st.caption(tx("有一条行情下载失败，图上用的是本地缓存。", "One download failed, so the chart is using the local cache."))
+if note_meta.get("adjust_mismatch"):
+    st.caption(tx("两条腿的复权来源可能不一致。Yahoo 复权价含分红再投资，东财用前复权，价差水平要谨慎解读。", "The two legs may not use the same adjustment. Yahoo reinvests dividends; East Money uses a forward adjustment. Read the spread level with care."))
+elif not any(str(note).startswith("meta:") for note in notes):
+    for note in parsed["prose"]:
+        st.caption(note)
 if eg["reject_5"]:
     coint_words = tx(f"5% 水平上拒绝无协整（EG p = {pval(eg['pvalue'])}）", f"rejects no-cointegration at 5% (EG p = {pval(eg['pvalue'])})")
     note_class = "note ok"
@@ -229,6 +244,25 @@ with ctrl_left:
     )
 with ctrl_right:
     show_marks = st.checkbox(tx("显示开平仓标记", "Show trade marks"), value=True)
+show_alt = st.checkbox(
+    tx("对照另一条 β", "Compare the other beta"),
+    value=False,
+    key="show_alt_beta",
+    help=tx("默认只算侧栏选中的那条。勾上之后再补滚动 OLS 或卡尔曼里的另一条，第一次会多花一点时间。", "By default only the selected hedge is estimated. This adds the other one, which takes a little longer the first time."),
+)
+if show_alt:
+    alt = cached_alt_beta(
+        picked.a_code,
+        picked.h_code,
+        warm,
+        str(end_day),
+        str(pd.Timestamp(start_day).date()),
+        signal_token(params),
+    )
+    for column in alt.columns:
+        if column not in frame.columns:
+            frame[column] = alt.reindex(frame.index)[column]
+    result["frame"] = frame
 focus = st.session_state.get("chart_focus")
 if isinstance(focus, dict) and focus.get("start") and focus.get("end"):
     st.caption(tx(f"图表目前锁定在 {focus['start']} 至 {focus['end']}。", f"The chart is locked to {focus['start']} – {focus['end']}."))
@@ -295,8 +329,8 @@ with tabs[7]:
 
 st.markdown(
     tx(
-        '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.1 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
-        '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.1 · Research and study only. Not investment advice. A backtest is not a forecast.</p>',
+        '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.2 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
+        '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.2 · Research and study only. Not investment advice. A backtest is not a forecast.</p>',
     ),
     unsafe_allow_html=True,
 )

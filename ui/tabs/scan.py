@@ -12,7 +12,7 @@ from ah_pairs.portfolio import portfolio_summary
 from ah_pairs.scan import read_scan
 from ah_pairs.universe import liquid_subset
 from ui.cache import cached_pair
-from ui.format import pct, rank_lines, render_quick_compare, show_table
+from ui.format import follow_pair_selection, pct, rank_lines, render_quick_compare, show_table
 
 
 def _portfolio_caption(summary: dict) -> None:
@@ -30,15 +30,16 @@ def _portfolio_caption(summary: dict) -> None:
 def render_scan(page) -> None:
     st.markdown(
         tx(
-            "上面四只和下面大约十二只是现算。全部股票池不要在页面里跑：用 `python -m ah_pairs.scan --all` 写到缓存，刷新后这页会读 `summary.parquet` 和 `returns.parquet`。",
-            "The four names and the dozen below are computed here. Do not scan the full universe in the browser. `python -m ah_pairs.scan --all` writes the cache, and this page then reads summary.parquet and returns.parquet.",
+            "上面四只和下面大约十二只是现算。全部股票池不要在页面里跑：用 `python -m ah_pairs.scan --all` 写到缓存目录的 `scan/`，或放到仓库的 `data/scan_snapshot/`。这页读较新的那一份。点表格里的一行，就打开那一对。",
+            "The four names and the dozen below are computed here. Do not scan the full universe in the browser. `python -m ah_pairs.scan --all` writes scan/ in the cache, or data/scan_snapshot/ in the repo. This page reads the newer file. Select a row to open that pair.",
         )
     )
     render_quick_compare(page, "compare_from_scan")
     saved_summary, saved_returns = read_scan()
     if isinstance(saved_summary, pd.DataFrame) and not saved_summary.empty:
         st.markdown(tx("**已保存的离线扫描**", "**Saved offline scan**"))
-        show_table(saved_summary)
+        st.caption(tx("点一行就切换到那一对。", "Select a row to switch to that pair."))
+        follow_pair_selection(show_table(saved_summary, key="saved_scan_table", selectable=True), saved_summary)
         rank_lines(saved_summary)
         if isinstance(saved_returns, pd.DataFrame) and not saved_returns.empty:
             _portfolio_caption(portfolio_summary(saved_returns))
@@ -79,16 +80,22 @@ def render_scan(page) -> None:
         st.session_state["scan_returns"] = pd.DataFrame(returns)
     if "scan_rows" in st.session_state:
         table = pd.DataFrame(st.session_state["scan_rows"])
-        show_table(
+        st.caption(tx("点一行就切换到那一对。", "Select a row to switch to that pair."))
+        follow_pair_selection(
+            show_table(
+                table,
+                {
+                    "eg_pvalue": st.column_config.NumberColumn("EG p", format="%.3f"),
+                    "sharpe": st.column_config.NumberColumn(tx("夏普", "Sharpe"), format="%.2f"),
+                    "total_return": st.column_config.NumberColumn(tx("净收益", "Net"), format="%.2%"),
+                    "max_drawdown": st.column_config.NumberColumn(tx("最大回撤", "Max drawdown"), format="%.2%"),
+                    "n_trades": st.column_config.NumberColumn(tx("交易次数", "Trades"), format="%d"),
+                    "total_cost": st.column_config.NumberColumn(tx("成本合计", "Costs"), format="%.2%"),
+                },
+                key="live_scan_table",
+                selectable=True,
+            ),
             table,
-            {
-                "eg_pvalue": st.column_config.NumberColumn("EG p", format="%.3f"),
-                "sharpe": st.column_config.NumberColumn(tx("夏普", "Sharpe"), format="%.2f"),
-                "total_return": st.column_config.NumberColumn(tx("净收益", "Net"), format="%.2%"),
-                "max_drawdown": st.column_config.NumberColumn(tx("最大回撤", "Max drawdown"), format="%.2%"),
-                "n_trades": st.column_config.NumberColumn(tx("交易次数", "Trades"), format="%d"),
-                "total_cost": st.column_config.NumberColumn(tx("成本合计", "Costs"), format="%.2%"),
-            },
         )
         rank_lines(table)
         stored = st.session_state.get("scan_returns")

@@ -625,3 +625,194 @@ def test_language_toggle_uses_english_and_traditional():
         return
     assert traditional == zhconv.convert("协整", "zh-hant")
 
+
+def test_signal_token_ignores_thresholds_and_trade_token_does_not():
+    from dataclasses import replace
+
+    from ah_pairs.backtest import signal_token, trade_token
+
+    params = _params()
+    moved = replace(params, entry_z=2.5, exit_z=0.25)
+    assert signal_token(params) == signal_token(moved)
+    assert trade_token(params) != trade_token(moved)
+
+
+def test_sharpe_annualization_follows_calendar_bars():
+    from ah_pairs.backtest import sample_clock
+
+    index = pd.bdate_range("2020-01-02", periods=400)
+    rng = np.random.default_rng(0)
+    z = np.zeros(400)
+    z[10:40] = -3.0
+    frame = pd.DataFrame(
+        {
+            "z": z,
+            "beta": np.ones(400),
+            "ret_a": rng.normal(0.0, 0.01, 400),
+            "ret_h": rng.normal(0.0, 0.01, 400),
+        },
+        index=index,
+    )
+    work, _trades, stats = run_backtest(frame, _params(fill="same_close"))
+    clock = sample_clock(work.index)
+    assert stats["years"] == pytest.approx(clock["years"])
+    assert stats["bars_per_year"] == pytest.approx(clock["bars_per_year"])
+    rets = work["ret_strat"].to_numpy(dtype=float)
+    rets = rets[np.isfinite(rets)]
+    vol = float(np.std(rets, ddof=1))
+    expected = float(np.mean(rets) / vol * np.sqrt(stats["bars_per_year"]))
+    assert stats["sharpe"] == pytest.approx(expected)
+    assert abs(stats["years"] - len(work) / 252.0) > 0.01
+
+
+def test_cost_parts_sum_to_the_total_and_rebalance_is_separate():
+    z = np.full(8, -3.0)
+    beta = np.array([1.0, 1.0, 1.01, 1.01, 1.01, 1.50, 1.50, 1.50])
+    params = _params(
+        fill="same_close",
+        beta_band=0.10,
+        costs=CostParams(
+            a_commission=0.01,
+            h_commission=0.01,
+            a_borrow_annual=0.0,
+            h_borrow_annual=0.0,
+            use_statutory_stamp=False,
+            a_stamp_sell=0.01,
+            h_stamp=0.01,
+            slippage=0.001,
+        ),
+    )
+    _work, _trades, stats = run_backtest(_book(z, beta), params)
+    parts = (
+        stats["cost_a_commission"]
+        + stats["cost_a_stamp"]
+        + stats["cost_h_commission"]
+        + stats["cost_h_stamp"]
+        + stats["cost_slippage"]
+    )
+    assert parts == pytest.approx(stats["total_cost"])
+    assert stats["cost_turnover"] > 0
+    assert stats["cost_rebalance"] > 0
+    assert stats["cost_turnover"] + stats["cost_rebalance"] == pytest.approx(stats["total_cost"])
+
+
+def test_walk_forward_stitches_validation_equity():
+    from ah_pairs.analysis import walk_forward
+
+    index = pd.bdate_range("2018-01-02", periods=160)
+    z = np.zeros(160)
+    z[20:40] = 3.0
+    frame = pd.DataFrame(
+        {"z": z, "beta": np.ones(160), "ret_a": np.full(160, 0.0005), "ret_h": np.zeros(160)},
+        index=index,
+    )
+    result = walk_forward(frame, _params(fill="same_close"))
+    assert result["scheme"] == "half"
+    assert result["oos_equity"].index.min() == result["valid_start"]
+    assert len(result["oos_equity"]) == len(result["oos_returns"])
+    assert result["table"]["role"].tolist().count("valid_half") == 1
+
+
+def test_selected_hedge_skips_the_other_beta():
+    from ah_pairs.analysis import build_signals
+
+    y, x = _cointegrated_pair(n=80, seed=1)
+    prices = pd.DataFrame(
+        {"log_a": y, "log_h": x, "both_open": True},
+        index=pd.bdate_range("2020-01-02", periods=len(y)),
+    )
+    rolling = build_signals(prices, _params(hedge="rolling", hedge_window=20, z_window=10), alt=False)
+    assert "beta_rolling" in rolling.columns
+    assert "beta_kalman" not in rolling.columns
+    kalman = build_signals(prices, _params(hedge="kalman", hedge_window=20, z_window=10), alt=False)
+    assert "beta_kalman" in kalman.columns
+    assert "beta_rolling" not in kalman.columns
+
+
+def test_slice_codes_and_english_labels_have_no_chinese():
+    import re
+
+    from ah_pairs.i18n import set_lang
+    from ah_pairs.labels import SLICE_EN, slice_label
+    from ah_pairs.stability import slice_checks
+
+    y, x = _cointegrated_pair(n=120, phi=0.8, seed=8)
+    frame = pd.DataFrame(
+        {
+            "log_a": y,
+            "log_h": x,
+            "log_a_raw": y + 0.2,
+            "log_h_raw": x,
+            "ret_a": np.zeros(len(y)),
+            "ret_h": np.zeros(len(y)),
+        }
+    )
+    checks = slice_checks(frame)
+    assert "unadjusted" in set(checks["code"])
+    assert "full" in set(checks["code"])
+    set_lang("en")
+    try:
+        for code in SLICE_EN:
+            assert re.search(r"[\u4e00-\u9fff]", slice_label(code)) is None
+    finally:
+        set_lang("zh")
+
+
+def test_download_notes_keep_codes_the_page_can_translate():
+    from ah_pairs.notes import parse_notes
+
+    parsed = parse_notes(
+        [
+            "meta:src:a:yahoo",
+            "meta:src:h:eastmoney",
+            "meta:sessions:10:2",
+            "meta:fx_lag:3",
+            "meta:adjust_mismatch:1",
+            "A股来源：cache",
+            "含预热的下载区间：同时开市 10 天，只有一边开市 2 天。",
+        ]
+    )
+    assert parsed["sources"]["a"] == "yahoo"
+    assert parsed["sources"]["h"] == "eastmoney"
+    assert parsed["meta"]["download_common"] == 10
+    assert parsed["meta"]["download_one_sided"] == 2
+    assert parsed["meta"]["fx_lag"] == 3
+    assert parsed["meta"]["adjust_mismatch"] is True
+    assert parsed["prose"]
+
+
+def test_market_refresh_keeps_a_stale_cache_and_does_not_fetch_on_read(tmp_path):
+    from ah_pairs.market import read_ah_premium_index, read_southbound, refresh_or_keep
+
+    assert read_southbound(tmp_path) is None
+    assert read_ah_premium_index(tmp_path) is None
+    cached = pd.Series([120.0], index=pd.to_datetime(["2024-01-02"]), name="hsahp")
+
+    def boom():
+        raise RuntimeError("upstream down")
+
+    kept, note = refresh_or_keep(cached, boom, lambda series: series)
+    assert kept.iloc[0] == 120.0
+    assert note.startswith("沿用")
+    fresh = pd.Series([130.0], index=cached.index, name="hsahp")
+    stored, source = refresh_or_keep(cached, lambda: (fresh, "yahoo:HSAHP.HK"), lambda series: series)
+    assert source == "yahoo:HSAHP.HK"
+    assert stored.iloc[0] == 130.0
+
+
+def test_read_scan_prefers_the_newer_folder(tmp_path, monkeypatch):
+    import os
+
+    from ah_pairs.scan import read_scan, write_scan
+    from ah_pairs import scan as scan_mod
+
+    older = tmp_path / "old"
+    newer = tmp_path / "new"
+    write_scan(pd.DataFrame({"A": ["1"]}), pd.DataFrame({"x": [1.0]}), older)
+    write_scan(pd.DataFrame({"A": ["2"]}), pd.DataFrame({"x": [2.0]}), newer)
+    os.utime(older / "summary.parquet", (1_000, 1_000))
+    os.utime(newer / "summary.parquet", (2_000_000_000, 2_000_000_000))
+    monkeypatch.setattr(scan_mod, "_scan_folders", lambda folder=None: [older, newer])
+    summary, _returns = read_scan()
+    assert summary.iloc[0]["A"] == "2"
+

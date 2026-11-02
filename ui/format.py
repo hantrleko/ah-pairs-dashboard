@@ -49,8 +49,33 @@ def show_chart(fig, key: str) -> None:
     st.plotly_chart(fig, use_container_width=True, key=key, config={"displayModeBar": True})
 
 
-def show_table(frame, column_config=None) -> None:
-    st.dataframe(frame, use_container_width=True, hide_index=True, column_config=column_config)
+def show_table(frame, column_config=None, key=None, selectable: bool = False):
+    kwargs = {
+        "use_container_width": True,
+        "hide_index": True,
+        "column_config": column_config,
+    }
+    if key:
+        kwargs["key"] = key
+    if selectable:
+        kwargs["on_select"] = "rerun"
+        kwargs["selection_mode"] = "single-row"
+    event = st.dataframe(frame, **kwargs)
+    return event if selectable else None
+
+
+def follow_pair_selection(event, table: pd.DataFrame) -> None:
+    """点扫描表的一行，就打开那一对。"""
+    if event is None or table is None or "A" not in getattr(table, "columns", []):
+        return
+    selection = getattr(event, "selection", None)
+    rows = list(getattr(selection, "rows", []) or [])
+    if not rows:
+        return
+    code = str(table.iloc[int(rows[0])]["A"]).zfill(6)
+    if st.session_state.get("pair_select") != code:
+        st.session_state["pair_select"] = code
+        st.rerun()
 
 
 def span_frame(data: pd.DataFrame, span: str) -> pd.DataFrame:
@@ -173,9 +198,16 @@ def render_quick_compare(page, button_key: str) -> None:
         return
     table = saved["table"]
     rank_lines(table)
-    columns = [col for col in ["简称", "公司", "A", "H", "eg_pvalue", "total_return", "max_drawdown", "n_trades", "total_cost", "sharpe", "说明"] if col in table.columns]
+    rename = {
+        "简称": tx("简称", "Short"),
+        "公司": tx("公司", "Company"),
+        "说明": tx("说明", "Note"),
+    }
+    show = table.rename(columns=rename)
+    wanted = [rename.get(col, col) for col in ["简称", "公司", "A", "H", "eg_pvalue", "total_return", "max_drawdown", "n_trades", "total_cost", "sharpe", "说明"]]
+    columns = [col for col in wanted if col in show.columns]
     show_table(
-        table[columns],
+        show[columns],
         {
             "eg_pvalue": st.column_config.NumberColumn(tx("EG p 值", "EG p-value"), format="%.3f"),
             "total_return": st.column_config.NumberColumn(tx("净收益", "Net return"), format="%.2%"),

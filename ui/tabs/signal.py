@@ -62,9 +62,18 @@ def render_signal(page) -> None:
     with right:
         show_chart(hedge_figure(page.view, active=page.params.hedge), "chart_hedge_signal")
     st.caption(meta(tx("溢价和 β", "Premium and beta"), page.view.index, page.cache_stamp, tx("β 只用当天以前的价格。", "Beta uses only prices before that day.")))
-    spread_bytes = spread_png(page.frame, page.params.z_window)
-    if spread_bytes:
-        st.download_button(tx("下载价差图 PNG", "Download spread PNG"), spread_bytes, file_name=f"{page.picked.a_code}_spread.png", mime="image/png", key="spread_png_signal")
+    png_key = f"{page.picked.a_code}|{page.params.z_window}|{page.start_day}|{page.end_day}"
+    if st.button(tx("准备价差图", "Prepare the spread figure"), key="prep_spread_signal"):
+        st.session_state["signal_png_key"] = png_key
+        st.session_state["signal_png"] = spread_png(page.frame, page.params.z_window)
+    if st.session_state.get("signal_png_key") == png_key and st.session_state.get("signal_png"):
+        st.download_button(
+            tx("下载价差图 PNG", "Download spread PNG"),
+            st.session_state["signal_png"],
+            file_name=f"{page.picked.a_code}_spread.png",
+            mime="image/png",
+            key="spread_png_signal",
+        )
     payload = alert_payload(page.picked["name"], page.picked.a_code, page.picked.h_code, state, page.params.entry_z)
     st.markdown(tx("**提醒**", "**Alert**"))
     if payload is None:

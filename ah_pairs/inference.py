@@ -16,14 +16,15 @@ def _finite(returns) -> np.ndarray:
     return values[np.isfinite(values)]
 
 
-def annualized_sharpe(returns) -> float:
+def annualized_sharpe(returns, ann_factor: float = 252.0) -> float:
     values = _finite(returns)
     if len(values) < 3:
         return np.nan
     vol = float(np.std(values, ddof=1))
+    factor = float(ann_factor) if np.isfinite(ann_factor) and ann_factor > 0 else 252.0
     if not np.isfinite(vol) or vol <= 0:
         return np.nan
-    return float(np.mean(values) / vol * np.sqrt(252.0))
+    return float(np.mean(values) / vol * np.sqrt(factor))
 
 
 def block_bootstrap_sharpe(
@@ -31,10 +32,14 @@ def block_bootstrap_sharpe(
     block: int = 21,
     n_boot: int = 400,
     seed: int = 7,
+    ann_factor: float = 252.0,
 ) -> dict:
-    """环形区块自助法。区间是年化夏普的 2.5% 和 97.5% 分位。"""
+    """环形区块自助法。区间是年化夏普的 2.5% 和 97.5% 分位。
+
+    ann_factor 要和点估计用同一个数。页面上传入这段样本每日历年的行数。
+    """
     values = _finite(returns)
-    point = annualized_sharpe(values)
+    point = annualized_sharpe(values, ann_factor)
     n = len(values)
     if n < max(block * 2, 30) or not np.isfinite(point):
         return {
@@ -45,6 +50,7 @@ def block_bootstrap_sharpe(
             "n": int(n),
             "block": int(block),
             "n_boot": 0,
+            "ann_factor": float(ann_factor),
         }
     rng = np.random.default_rng(seed)
     width = min(int(block), n)
@@ -60,7 +66,7 @@ def block_bootstrap_sharpe(
                 tail = n - start
                 pieces.append(np.concatenate([values[start:], values[: width - tail]]))
         sample = np.concatenate(pieces)[:n]
-        draws[i] = annualized_sharpe(sample)
+        draws[i] = annualized_sharpe(sample, ann_factor)
     draws = draws[np.isfinite(draws)]
     if len(draws) < 20:
         return {
@@ -71,6 +77,7 @@ def block_bootstrap_sharpe(
             "n": int(n),
             "block": width,
             "n_boot": int(len(draws)),
+            "ann_factor": float(ann_factor),
         }
     return {
         "ok": True,
@@ -80,6 +87,7 @@ def block_bootstrap_sharpe(
         "n": int(n),
         "block": width,
         "n_boot": int(len(draws)),
+        "ann_factor": float(ann_factor),
     }
 
 

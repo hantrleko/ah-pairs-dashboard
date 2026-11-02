@@ -39,14 +39,23 @@ def _align(values, source_index, target_index, both_open=None) -> pd.Series:
     return aligned.where(open_day, aligned.ffill())
 
 
-def build_signals(prices: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
+def build_signals(prices: pd.DataFrame, params: StrategyParams, alt: bool = True) -> pd.DataFrame:
+    """alt 为假时只算当前选中的对冲。另一条 β 留给对照开关，避免每次打开页面都跑卡尔曼。"""
     base = _common(prices)
     y = base["log_a"].to_numpy(dtype=float)
     x = base["log_h"].to_numpy(dtype=float)
-    alpha_roll, beta_roll = rolling_ols(y, x, params.hedge_window)
-    alpha_kalman, beta_kalman = kalman_hedge(
-        y, x, delta=params.kalman_delta, init_window=params.hedge_window
-    )
+    need_roll = alt or params.hedge == "rolling"
+    need_kalman = alt or params.hedge == "kalman"
+    if need_roll:
+        alpha_roll, beta_roll = rolling_ols(y, x, params.hedge_window)
+    else:
+        alpha_roll = beta_roll = np.full(len(base), np.nan)
+    if need_kalman:
+        alpha_kalman, beta_kalman = kalman_hedge(
+            y, x, delta=params.kalman_delta, init_window=params.hedge_window
+        )
+    else:
+        alpha_kalman = beta_kalman = np.full(len(base), np.nan)
     if params.hedge == "kalman":
         alpha, beta = alpha_kalman, beta_kalman
     else:
@@ -56,8 +65,10 @@ def build_signals(prices: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
     out = prices.copy()
     out["alpha"] = _align(alpha, base.index, out.index, both)
     out["beta"] = _align(beta, base.index, out.index, both)
-    out["beta_rolling"] = _align(beta_roll, base.index, out.index, both)
-    out["beta_kalman"] = _align(beta_kalman, base.index, out.index, both)
+    if need_roll:
+        out["beta_rolling"] = _align(beta_roll, base.index, out.index, both)
+    if need_kalman:
+        out["beta_kalman"] = _align(beta_kalman, base.index, out.index, both)
     out["spread"] = _align(spread, base.index, out.index, both)
     out["z"] = _align(rolling_zscore(spread, params.z_window), base.index, out.index, both)
     out["spread_beta1"] = prices["log_a"] - prices["log_h"]
@@ -109,6 +120,8 @@ def analyze_frame(
     eval_start=None,
     northbound: pd.Series | None = None,
     full_diagnostics: bool = True,
+    alt_hedge: bool = True,
+    with_backtest: bool = True,
 ) -> dict:
     """prices 可以包含评估区间之前的预热样本。
 
@@ -117,7 +130,7 @@ def analyze_frame(
     卡尔曼 δ 若自动估计，也只用这段预热。
     """
     params, kalman_fit = _resolve_kalman(prices, params, eval_start)
-    signals = build_signals(prices, params)
+    signals = build_signals(prices, params, alt=alt_hedge)
     if eval_start is not None:
         start = pd.Timestamp(eval_start).normalize()
         view = signals.loc[signals.index >= start].copy()
@@ -139,7 +152,6 @@ def analyze_frame(
         adf = {"ok": False, "message": str(exc)}
     else:
         adf["ok"] = True
-    view["static_resid"] = eg["resid"].reindex(view.index)
     try:
         lags = select_vecm_lags(diag["log_a"], diag["log_h"])
         johansen = johansen_test(diag["log_a"], diag["log_h"], k_ar_diff=lags)
@@ -151,6 +163,34 @@ def analyze_frame(
     static_hl = ou_half_life(eg["resid"])
     traded = diag["spread"].replace([np.inf, -np.inf], np.nan).dropna()
     traded_hl = ou_half_life(traded) if len(traded) >= 30 else None
+    view["static_resid"] = eg["resid"].reindex(view.index)
+
+    if not with_backtest:
+        if northbound is not None and not northbound.empty:
+            view["northbound"] = northbound.reindex(view.index)
+        rolling_p = pd.Series(dtype=float, name="eg_pvalue")
+        if full_diagnostics:
+            try:
+                rolling_p = rolling_eg_pvalue(diag["log_a"], diag["log_h"], window=252, step=42)
+            except Exception:
+                rolling_p = pd.Series(dtype=float, name="eg_pvalue")
+        return {
+            "frame": view,
+            "trades": pd.DataFrame(),
+            "stats": {},
+            "eg": {k: v for k, v in eg.items() if k != "resid"},
+            "residual_adf": adf,
+            "half_life_static": static_hl,
+            "half_life_traded": traded_hl,
+            "johansen": johansen,
+            "northbound": None,
+            "rolling_p": rolling_p,
+            "sensitivity": pd.DataFrame(),
+            "params": params,
+            "kalman_fit": kalman_fit,
+            "n_common": int(len(diag)),
+            "n_one_sided": int((~view["both_open"].fillna(False)).sum()) if "both_open" in view.columns else 0,
+        }
 
     result, trades, stats = run_backtest(view, params)
     north = None
@@ -242,6 +282,7 @@ def walk_forward(
     chosen_exits = []
     n_trials = 0
     last_locked = params
+    oos_parts = []
     for train, valid, label in folds:
         locked, tried = _select_thresholds(train, params, entries, exits)
         n_trials += tried
@@ -252,27 +293,39 @@ def walk_forward(
         chosen_exits.append(float(locked.exit_z))
         train_name = "训练（选出参数）" if scheme == "half" else f"训练 {label}"
         valid_name = "验证（锁定参数）" if scheme == "half" else f"验证 {label}"
-        for name, sample, trial in (
-            (train_name, train, locked),
-            (valid_name, valid, locked),
+        train_role = "train_half" if scheme == "half" else "train"
+        valid_role = "valid_half" if scheme == "half" else "valid"
+        fold_id = "" if scheme == "half" else label
+        for name, sample, trial, role in (
+            (train_name, train, locked, train_role),
+            (valid_name, valid, locked, valid_role),
         ):
-            _path, _trades, stats = run_backtest(sample, trial)
-            pieces.append(_wf_row(name, trial, stats))
-            if name.startswith("验证"):
+            path, _trades, stats = run_backtest(sample, trial)
+            pieces.append(_wf_row(name, trial, stats, role, fold_id))
+            if role.startswith("valid"):
                 valid_sharpes.append(stats["sharpe"])
+                oos_parts.append(path["ret_strat"])
     if scheme == "half":
-        for name, trial in (
-            ("全样本（锁定参数）", last_locked),
-            ("全样本（侧栏当前参数）", params),
+        for name, trial, role in (
+            ("全样本（锁定参数）", last_locked, "full_locked"),
+            ("全样本（侧栏当前参数）", params, "full_sidebar"),
         ):
             _path, _trades, stats = run_backtest(frame, trial)
-            pieces.append(_wf_row(name, trial, stats))
+            pieces.append(_wf_row(name, trial, stats, role, ""))
     else:
         _path, _trades, stats = run_backtest(frame, params)
-        pieces.append(_wf_row("全样本（侧栏当前参数）", params, stats))
+        pieces.append(_wf_row("全样本（侧栏当前参数）", params, stats, "full_sidebar", ""))
     finite = [float(item) for item in valid_sharpes if np.isfinite(item)]
     train = folds[0][0]
     valid = folds[-1][1]
+    if oos_parts:
+        oos = pd.concat(oos_parts)
+        oos = oos[~oos.index.duplicated(keep="first")].sort_index()
+        oos_equity = (1.0 + oos.fillna(0.0)).cumprod()
+        oos_equity.name = "oos_equity"
+    else:
+        oos = pd.Series(dtype=float, name="oos_return")
+        oos_equity = pd.Series(dtype=float, name="oos_equity")
     return {
         "ok": True,
         "scheme": scheme,
@@ -289,6 +342,8 @@ def walk_forward(
         "valid_start": valid.index.min(),
         "valid_end": valid.index.max(),
         "table": pd.DataFrame(pieces),
+        "oos_returns": oos,
+        "oos_equity": oos_equity,
     }
 
 
@@ -336,9 +391,11 @@ def _select_thresholds(train, params, entries, exits):
     return best, tried
 
 
-def _wf_row(name: str, trial: StrategyParams, stats: dict) -> dict:
+def _wf_row(name: str, trial: StrategyParams, stats: dict, role: str = "", fold: str = "") -> dict:
     return {
         "区间": name,
+        "role": role,
+        "fold": fold,
         "开仓 |z|": float(trial.entry_z),
         "平仓 |z|": float(trial.exit_z),
         "净收益": stats["total_return"],

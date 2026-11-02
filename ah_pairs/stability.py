@@ -83,8 +83,8 @@ def benjamini_hochberg(pvalues, alpha: float = 0.05) -> dict:
     return {"m": m, "n_reject": int(k), "rate": float(k / m), "alpha": float(alpha)}
 
 
-def window_count_note(n_days: int, lengths: tuple[int, ...] = DEFAULT_LENGTHS, step: int | None = None) -> str:
-    """说明地图上的窗口是怎么数出来的。窗口重叠，次数不是独立样本数。"""
+def window_count_facts(n_days: int, lengths: tuple[int, ...] = DEFAULT_LENGTHS, step: int | None = None) -> dict:
+    """窗口个数。相邻窗口重叠，次数不是独立样本数。"""
     if step is None:
         step = max(21, int(n_days) // 36)
     parts = []
@@ -95,12 +95,19 @@ def window_count_note(n_days: int, lengths: tuple[int, ...] = DEFAULT_LENGTHS, s
         ends = list(range(length, n_days + 1, step))
         if not ends or ends[-1] != n_days:
             ends.append(n_days)
-        parts.append(f"{int(length)} 日 {len(ends)} 个")
+        parts.append((int(length), int(len(ends))))
         total += len(ends)
+    return {"n_days": int(n_days), "step": int(step), "total": int(total), "parts": parts}
+
+
+def window_count_note(n_days: int, lengths: tuple[int, ...] = DEFAULT_LENGTHS, step: int | None = None) -> str:
+    """说明地图上的窗口是怎么数出来的。窗口重叠，次数不是独立样本数。"""
+    facts = window_count_facts(n_days, lengths=lengths, step=step)
+    parts = [f"{length} 日 {count} 个" for length, count in facts["parts"]]
     detail = "、".join(parts) if parts else "没有足够长的窗口"
     return (
-        f"这段有 {int(n_days)} 个价格点。步长 {int(step)} 个交易日，每种长度都包含最后一个终点。"
-        f"按这个设计大约 {total} 个窗口（{detail}）。相邻窗口共用大部分交易日，不能把检验次数当成独立样本。"
+        f"这段有 {facts['n_days']} 个价格点。步长 {facts['step']} 个交易日，每种长度都包含最后一个终点。"
+        f"按这个设计大约 {facts['total']} 个窗口（{detail}）。相邻窗口共用大部分交易日，不能把检验次数当成独立样本。"
         "下面的 BH 比例把这些 p 值放进 Benjamini–Hochberg，只作参考：窗口重叠，校正既不是严格的独立试验，也不代替 AIC 那一次全样本检验。"
     )
 
@@ -147,23 +154,35 @@ def length_summary(grid: pd.DataFrame) -> pd.DataFrame:
 
 
 def slice_checks(frame: pd.DataFrame) -> pd.DataFrame:
-    """全区间、前后半段、去掉一段，以及剔除极端日之后的检验。"""
-    specs = [("全区间", frame)]
+    """全区间、前后半段、去掉一段，以及剔除极端日之后的检验。
+
+    code 是稳定代号。情形列保留中文，界面按 code 翻译。
+    """
+    from ah_pairs.labels import SLICE_ZH
+
+    specs = [("full", frame)]
     n = len(frame)
     if n >= 240:
-        specs.append(("前半段", frame.iloc[: n // 2]))
-        specs.append(("后半段", frame.iloc[n // 2 :]))
+        specs.append(("first_half", frame.iloc[: n // 2]))
+        specs.append(("second_half", frame.iloc[n // 2 :]))
     if n >= 400:
-        specs.append(("去掉最早约一年", frame.iloc[252:]))
-        specs.append(("去掉最近约一年", frame.iloc[:-252]))
+        specs.append(("drop_first_year", frame.iloc[252:]))
+        specs.append(("drop_last_year", frame.iloc[:-252]))
     specs.extend(_extreme_slices(frame))
+    if {"log_a_raw", "log_h_raw"}.issubset(frame.columns):
+        raw = frame.dropna(subset=["log_a_raw", "log_h_raw"]).copy()
+        if len(raw) >= 80:
+            raw["log_a"] = raw["log_a_raw"]
+            raw["log_h"] = raw["log_h_raw"]
+            specs.append(("unadjusted", raw))
     rows = []
-    for name, sample in specs:
+    for code, sample in specs:
         p_fixed = eg_pvalue(sample["log_a"], sample["log_h"])
         p_aic = eg_pvalue(sample["log_a"], sample["log_h"], autolag="aic")
         rows.append(
             {
-                "情形": name,
+                "code": code,
+                "情形": SLICE_ZH.get(code, code),
                 "天数": int(len(sample.dropna(subset=["log_a", "log_h"]))),
                 "pvalue": p_fixed,
                 "reject_5": bool(np.isfinite(p_fixed) and p_fixed < 0.05),
@@ -180,12 +199,12 @@ def _extreme_slices(frame: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
         return out
     ret_a = frame["ret_a"].abs()
     ret_h = frame["ret_h"].abs()
-    out.append(("去掉单日涨跌超过 5% 的日子", frame.loc[(ret_a <= 0.05) & (ret_h <= 0.05)]))
-    out.append(("去掉单日涨跌超过 3% 的日子", frame.loc[(ret_a <= 0.03) & (ret_h <= 0.03)]))
+    out.append(("drop_move_5", frame.loc[(ret_a <= 0.05) & (ret_h <= 0.05)]))
+    out.append(("drop_move_3", frame.loc[(ret_a <= 0.03) & (ret_h <= 0.03)]))
     if "spread" in frame.columns:
         change = frame["spread"].diff().abs()
         cutoff = change.quantile(0.99)
         if np.isfinite(cutoff):
             keep = change.isna() | (change <= cutoff)
-            out.append(("去掉价差跳动最大的 1% 日子", frame.loc[keep]))
+            out.append(("drop_spread_p99", frame.loc[keep]))
     return out
