@@ -29,9 +29,11 @@ def render_method() -> None:
 
 **夏普。** 年数是第一根和最后一根 K 线的日历跨度除以 365.25。年化因子是这段行数除以这个年数，不再固定乘 √252。只在同时开市日上重算的夏普单独列出。无风险利率按 0。区间用同一个年化因子做区块自助法。PSR 是未年化夏普大于 0 的概率。压缩夏普再把开仓阈值的搜索次数算进去。它们都不是获利概率。融券费仍按一年 252 天计提。
 
-**成本。** 佣金、印花税、滑点和融券费分开。方向变化那天记入开平仓，方向不变、只改 β 的记入再平衡。
+**成本。** 佣金、印花税、滑点和融券费分开。方向变化那天记入开平仓，方向不变、只改 β 的记入再平衡。回测页可以另下一行 H 股现金红利的 20% 预扣：只扣前一日已经持有 H 股多头的日子，按当日汇率换成人民币。没有分红序列时这一行留空。主回测仍用复权价。
 
-**多标的。** 页面上的四只和大约十二只是现算。全部股票池用 `python -m ah_pairs.scan --all` 写到缓存目录，页面只读那份 parquet。等风险组合用各对策略日收益的滚动波动倒数，权重滞后一天。
+**链接。** 点「应用参数」后，地址栏写入股票、语言、日期、对冲、两个窗口、开仓和平仓阈值、成交时点、是否做空，以及成本是法定档还是零。打开链接就用这套规格。佣金小数、卡尔曼 δ 和再平衡带不在地址里。写错的字段会被丢掉，侧栏标出代号。
+
+**多标的。** 页面上的四只和大约十二只是现算。流动性子集的离线摘要放在 `data/scan_snapshot/`，表上写明生成日、样本区间、不做空、法定成本和次日收盘。扫描日早于行情缓存时，页面会标明。全部股票池仍用 `python -m ah_pairs.scan --all`，不要在页面里跑。等风险组合用各对策略日收益的滚动波动倒数，权重滞后一天。p 值更小不是「最协整」的发现。
 
 **多重比较。** 阈值网格、多折挑选和按 p 值给多只股票排序，都会把同一段行情试很多次。最好的那一格偏乐观。
 
@@ -54,9 +56,11 @@ def render_method() -> None:
 
 **Sharpe.** Years are the calendar span from the first bar to the last, divided by 365.25. The annualization factor is the number of rows divided by those years, not a fixed √252. A second Sharpe uses common sessions only. The risk-free rate is zero. The interval is a block bootstrap with the same factor. The PSR is the probability that the non-annualized Sharpe exceeds zero. The deflated Sharpe also counts how many entry thresholds were searched. None of these is the probability of making money. Borrow still accrues on a 252-day year.
 
-**Costs.** Commission, stamp, slippage and borrow are shown separately. A day that changes direction is an open or a close. A day that keeps the direction and only moves beta is a rebalance.
+**Costs.** Commission, stamp, slippage and borrow are shown separately. A day that changes direction is an open or a close. A day that keeps the direction and only moves beta is a rebalance. The backtest page can add one row that withholds 20% of H-share cash dividends, only on days the book was already long H, converted at that day's exchange rate. The row stays blank when there is no dividend series. The main backtest still uses adjusted closes.
 
-**Several pairs.** The four-name and twelve-name tables are computed on demand. The full universe is an offline job, `python -m ah_pairs.scan --all`, written into the cache directory. The page only reads that parquet. The equal-risk book uses inverse rolling volatility of each pair’s strategy return, lagged one day.
+**Link.** Apply writes the pair, language, dates, hedge, both windows, entry and exit, fill, whether A-shares can be shorted, and whether costs are the statutory schedule or zero. Opening that link uses this specification. Commission decimals, the Kalman delta and the rebalance band stay out of the address. Invalid fields are dropped and the sidebar names their codes.
+
+**Several pairs.** The four-name and twelve-name tables are computed on demand. An offline summary of the liquid subset lives in `data/scan_snapshot/`, with the generation date, sample window, short-A off, statutory costs and next-close fill. If that date is older than the price cache, the page says so. The full universe remains `python -m ah_pairs.scan --all` and does not run in the page. The equal-risk book uses inverse rolling volatility of each pair’s strategy return, lagged one day. A smaller p-value is not a discovery of the most cointegrated name.
 
 **Multiple testing.** Threshold grids, fold-by-fold selection and ranking many pairs on one sample all reuse the same prices. The best cell is biased upward.
 

@@ -281,6 +281,54 @@ def load_pair(
     return px, warnings
 
 
+def dividend_path(cache_dir: Path, ticker: str) -> Path:
+    safe = ticker.replace("=", "_").replace("^", "_")
+    return cache_dir / f"{safe}.dividends.parquet"
+
+
+def read_h_dividends(h_code: str, cache_dir: Path = CACHE_DIR) -> pd.Series | None:
+    """只读本地缓存。没有文件时返回 None，不访问网络。"""
+    path = dividend_path(cache_dir, h_to_yahoo(h_code))
+    if not path.exists():
+        return None
+    series = _read_series(path)
+    series = series[np.isfinite(series) & (series > 0)]
+    series.name = "dividend_hkd"
+    return series.sort_index()
+
+
+def load_h_dividends(h_code: str, cache_dir: Path = CACHE_DIR, refresh: bool = False) -> pd.Series:
+    """下载 H 股现金分红（港元/股）并写入缓存。页面打开时不要调用。"""
+    path = dividend_path(cache_dir, h_to_yahoo(h_code))
+    if path.exists() and not refresh:
+        stored = read_h_dividends(h_code, cache_dir)
+        if stored is None:
+            return pd.Series(dtype=float, name="dividend_hkd")
+        return stored
+    series = _yahoo_dividends(h_to_yahoo(h_code))
+    _write_series(path, series if not series.empty else pd.Series(dtype=float, name="close"))
+    stored = read_h_dividends(h_code, cache_dir)
+    return stored if stored is not None else pd.Series(dtype=float, name="dividend_hkd")
+
+
+def _yahoo_dividends(ticker: str) -> pd.Series:
+    import socket
+
+    import yfinance as yf
+
+    previous = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(20)
+    try:
+        downloaded = yf.Ticker(ticker).dividends
+    finally:
+        socket.setdefaulttimeout(previous)
+    if downloaded is None or len(downloaded) == 0:
+        return pd.Series(dtype=float, name="dividend_hkd")
+    series = pd.Series(downloaded.to_numpy(dtype=float), index=_normalize_index(downloaded.index), name="dividend_hkd")
+    series = series[~series.index.duplicated(keep="last")].sort_index()
+    return series[np.isfinite(series) & (series > 0)]
+
+
 def unadjusted_path(cache_dir: Path, ticker: str) -> Path:
     safe = ticker.replace("=", "_").replace("^", "_")
     return cache_dir / f"{safe}.unadj.parquet"

@@ -1,0 +1,25 @@
+name: scan-liquid
+
+on:
+  workflow_dispatch:
+
+jobs:
+  liquid:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements.txt
+      - name: Scan the liquid subset
+        run: python -m ah_pairs.scan --start 2018-01-01
+        env:
+          AH_PUBLISH_SCAN: "1"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ah-scan-liquid
+          path: data/scan_snapshot/summary.parquet
+          if-no-files-found: error

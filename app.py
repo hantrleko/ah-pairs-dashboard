@@ -50,14 +50,14 @@ with title_col:
         tx(
             """
 <div class="brand">
-  <p class="kicker">V1.2 · EUGENE FINANCE</p>
+  <p class="kicker">V1.4 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H 股协整配对交易研究看板</h1>
   <p class="subtitle">Interactive Cointegration &amp; Dynamic Pairs Trading Lab · 仅供学习与研究，不构成投资建议</p>
 </div>
             """,
             """
 <div class="brand">
-  <p class="kicker">V1.2 · EUGENE FINANCE</p>
+  <p class="kicker">V1.4 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H cointegration and pairs research</h1>
   <p class="subtitle">For study and research. Not investment advice.</p>
 </div>
@@ -131,7 +131,7 @@ st.markdown(
         f"""
 <div class="mast">
   <div>
-    <p class="kicker">V1.2 · 这一对</p>
+    <p class="kicker">V1.4 · 这一对</p>
     <p class="pair-name">{picked["name"]}</p>
     <p class="meta">{picked.a_code} · {picked.h_code} · {len(common)} 个同时开市日，另有 {one_sided} 天只有一边开市。协整不用这些单边日；已有仓位仍计入开市一边的涨跌。</p>
   </div>
@@ -151,7 +151,7 @@ st.markdown(
         f"""
 <div class="mast">
   <div>
-    <p class="kicker">V1.2 · this pair</p>
+    <p class="kicker">V1.4 · this pair</p>
     <p class="pair-name">{picked["name"]}</p>
     <p class="meta">{picked.a_code} · {picked.h_code} · {len(common)} common sessions, plus {one_sided} one-sided days. Cointegration ignores those days; an open position still earns the side that traded.</p>
   </div>
@@ -211,11 +211,19 @@ elif stats["total_return"] > 0:
 else:
     pay_words = tx("此区间回测报酬接近零", "the backtest return in this window is about zero")
 short_words = tx("本回测允许做空 A 股，多数标的不一定能融到券，这个假设偏乐观。", "This backtest allows short A-shares. Many names cannot be borrowed, so the assumption is optimistic.") if params.allow_short_a else tx("本回测不允许做空 A 股。", "This backtest does not short A-shares.")
+hedge_name = tx("滚动 OLS", "rolling OLS") if params.hedge == "rolling" else tx("卡尔曼滤波", "Kalman")
+fill_name = tx("次日收盘", "next close") if params.fill == "next_close" else tx("当日收盘", "same close")
+cost_name = tx("法定成本", "statutory costs") if choice["include_costs"] else tx("零成本", "zero costs")
+spec_line = tx(
+    f"当前规格：{hedge_name}，估计窗口 {int(params.hedge_window)} 日，z 窗口 {int(params.z_window)} 日，开仓 {params.entry_z:g}，平仓 {params.exit_z:g}，{fill_name}，{cost_name}。",
+    f"Spec: {hedge_name}, estimation window {int(params.hedge_window)} days, z window {int(params.z_window)} days, entry {params.entry_z:g}, exit {params.exit_z:g}, {fill_name}, {cost_name}.",
+)
 tail = tx("p 值不是获利概率，也不保证价差会收敛。", "The p-value is not the probability of profit, and it does not mean the spread will converge.")
 st.markdown(
     f'<p class="{note_class}">{coint_words}{tx("；", "; ")}{pay_words}{tx("。", ". ")}{short_words}{tx("", " ")}{tail}</p>',
     unsafe_allow_html=True,
 )
+st.caption(spec_line)
 sharpe_text = f"{stats['sharpe']:.2f}" if np.isfinite(stats["sharpe"]) else "—"
 kpis(
     [
@@ -329,8 +337,8 @@ with tabs[7]:
 
 st.markdown(
     tx(
-        '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.2 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
-        '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.2 · Research and study only. Not investment advice. A backtest is not a forecast.</p>',
+        '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.4 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
+        '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.4 · Research and study only. Not investment advice. A backtest is not a forecast.</p>',
     ),
     unsafe_allow_html=True,
 )

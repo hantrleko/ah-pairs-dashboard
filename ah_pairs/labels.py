@@ -32,6 +32,7 @@ COST_CASE = {
     "current": ("当前成本", "Current costs"),
     "zero": ("不计成本", "Zero costs"),
     "slip10": ("滑点再加 10 bps", "Slippage plus 10 bps"),
+    "h_div_tax": ("H 股红利税 20%", "H dividend tax 20%"),
 }
 
 WF_ROLE = {

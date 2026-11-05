@@ -8,32 +8,32 @@ import streamlit as st
 from ah_pairs.backtest import StrategyParams
 from ah_pairs.costs import CostParams
 from ah_pairs.i18n import set_lang, tx
+from ah_pairs.links import SpecLink, encode_spec, parse_spec_query
 from ah_pairs.universe import LIQUID_A_CODES
 from ui.cache import cached_universe
 from ui.format import QUICK
 
 
-def _initial_dates():
-    fallback = (pd.Timestamp("2018-01-01").date(), pd.Timestamp.today().date())
-    if "applied_dates" in st.session_state:
-        return st.session_state["applied_dates"]
-    try:
-        start = pd.Timestamp(st.query_params.get("start")).date()
-        end = pd.Timestamp(st.query_params.get("end")).date()
-    except (TypeError, ValueError):
-        return fallback
-    if start <= end:
-        return start, end
-    return fallback
+def _link_spec() -> SpecLink:
+    if "link_spec" not in st.session_state:
+        st.session_state["link_spec"] = parse_spec_query(dict(st.query_params))
+    return st.session_state["link_spec"]
 
 
-def _sync_query(pair: str, lang: str, start, end) -> None:
-    desired = {
-        "pair": str(pair),
-        "lang": str(lang),
-        "start": str(pd.Timestamp(start).date()),
-        "end": str(pd.Timestamp(end).date()),
-    }
+def _sync_query(pair: str, lang: str, start, end, params: StrategyParams, include_costs: bool) -> None:
+    spec = SpecLink(
+        start=pd.Timestamp(start).date(),
+        end=pd.Timestamp(end).date(),
+        hedge=params.hedge,
+        hedge_window=int(params.hedge_window),
+        z_window=int(params.z_window),
+        entry_z=float(params.entry_z),
+        exit_z=float(params.exit_z),
+        fill=params.fill,
+        allow_short_a=bool(params.allow_short_a),
+        include_costs=bool(include_costs),
+    )
+    desired = encode_spec(spec, pair=str(pair), lang=str(lang))
     current = {key: st.query_params.get(key) for key in desired}
     if current != desired:
         st.query_params.update(desired)
@@ -83,22 +83,47 @@ def render_sidebar(logo: str) -> dict:
     )
     a_code = st.selectbox(tx("公司", "Company"), codes, format_func=lambda code: labels.get(code, code), key="pair_select")
     picked = universe.loc[universe["a_code"] == a_code].iloc[0]
+    spec = _link_spec()
+    if "applied_params" in st.session_state:
+        seed = st.session_state["applied_params"]
+        seed_dates = st.session_state["applied_dates"]
+        seed_costs = bool(st.session_state["applied_costs_on"])
+        hedge_seed = seed.hedge
+        window_seed = int(seed.hedge_window)
+        z_seed = int(seed.z_window)
+        entry_seed = float(seed.entry_z)
+        exit_seed = float(seed.exit_z)
+        fill_seed = seed.fill
+        short_seed = bool(seed.allow_short_a)
+    else:
+        seed_dates = (spec.start, spec.end)
+        seed_costs = spec.include_costs
+        hedge_seed = spec.hedge
+        window_seed = spec.hedge_window
+        z_seed = spec.z_window
+        entry_seed = spec.entry_z
+        exit_seed = spec.exit_z
+        fill_seed = spec.fill
+        short_seed = spec.allow_short_a
 
     with st.form("params_form"):
         date_range = st.date_input(
             tx("评估区间", "Evaluation window"),
-            value=_initial_dates(),
+            value=seed_dates,
+            key="spec_dates",
         )
         st.caption(tx("区间之前的行情只用来预热 beta、z，以及卡尔曼 δ。", "Prices before this window warm up beta, z, and the Kalman delta."))
         st.header(tx("信号", "Signal"))
         hedge = st.radio(
             tx("对冲比率", "Hedge ratio"),
             ["rolling", "kalman"],
+            index=0 if hedge_seed == "rolling" else 1,
             format_func=lambda code: tx("滚动 OLS", "Rolling OLS") if code == "rolling" else tx("卡尔曼滤波", "Kalman"),
             horizontal=True,
+            key="spec_hedge",
             help=tx("两条 β 都会画出来。仓位只用选中的这一条，而且只用当天以前的价格。", "Both betas are plotted. Positions use only the selected one, and only past prices."),
         )
-        hedge_window = st.slider(tx("估计窗口（交易日）", "Estimation window (days)"), 40, 250, 120)
+        hedge_window = st.slider(tx("估计窗口（交易日）", "Estimation window (days)"), 40, 250, window_seed, key="spec_hw")
         kalman_auto = st.checkbox(
             tx("用预热样本估计卡尔曼 δ", "Estimate Kalman delta on the warm-up sample"),
             value=True,
@@ -110,25 +135,28 @@ def render_sidebar(logo: str) -> dict:
             value=1e-4,
             disabled=hedge != "kalman" or kalman_auto,
         )
-        z_window = st.slider(tx("z 窗口（交易日）", "z window (days)"), 20, 120, 60)
-        entry_z = st.slider(tx("开仓 |z|", "Entry |z|"), 1.0, 3.5, 2.0, 0.1)
-        exit_z = st.slider(tx("平仓 |z|", "Exit |z|"), 0.0, 1.5, 0.5, 0.1)
+        z_window = st.slider(tx("z 窗口（交易日）", "z window (days)"), 20, 120, z_seed, key="spec_zw")
+        entry_z = st.slider(tx("开仓 |z|", "Entry |z|"), 1.0, 3.5, entry_seed, 0.1, key="spec_zin")
+        exit_z = st.slider(tx("平仓 |z|", "Exit |z|"), 0.0, 1.5, exit_seed, 0.1, key="spec_zout")
         with st.expander(tx("进阶参数", "Advanced")):
             stop_z = st.slider(tx("止损 |z|（0 表示不用）", "Stop |z| (0 = off)"), 0.0, 6.0, 4.0, 0.1)
             beta_band = st.slider(tx("β 再平衡带", "Beta rebalance band"), 0.0, 0.50, 0.10, 0.01)
             allow_short_a = st.checkbox(
                 tx("允许做空 A 股", "Allow short A-shares"),
-                value=False,
+                value=short_seed,
+                key="spec_short",
                 help=tx("默认关闭。多数 A 股不一定能融到券。打开后，页顶会标明这个假设偏乐观。", "Off by default. Many A-shares cannot be borrowed. Turning it on is flagged on the page."),
             )
             require_positive_beta = st.checkbox(tx("β 不为正时空仓", "Flat when beta is not positive"), value=True)
         fill = st.radio(
             tx("T+1 约束", "T+1 fill"),
             ["next_close", "same_close"],
+            index=0 if fill_seed == "next_close" else 1,
             format_func=lambda code: tx("已考虑：次日收盘", "On: next close") if code == "next_close" else tx("未考虑：当日收盘", "Off: same close"),
             horizontal=True,
+            key="spec_fill",
         )
-        include_costs = st.checkbox(tx("计入交易成本", "Include trading costs"), value=True)
+        include_costs = st.checkbox(tx("计入交易成本", "Include trading costs"), value=seed_costs, key="spec_cost")
         with st.expander(tx("成本", "Costs")):
             statutory = st.checkbox(tx("使用法定印花税档期", "Statutory stamp schedule"), value=True)
             a_commission = _bps(tx("A 股佣金（bps，单边）", "A commission (bps, one way)"), 2.5, "a_comm")
@@ -175,6 +203,13 @@ def render_sidebar(logo: str) -> dict:
         st.session_state["applied_params"] = draft
         st.session_state["applied_dates"] = (date_range[0], date_range[1])
         st.session_state["applied_costs_on"] = bool(include_costs)
+    if spec.rejected:
+        st.caption(
+            tx(
+                f"链接里这些参数无效，已用页面默认：{'、'.join(spec.rejected)}",
+                f"Ignored invalid link fields: {', '.join(spec.rejected)}",
+            )
+        )
     st.caption(tx("改完参数后要点「应用参数」，协整和回测才会重算。", "Cointegration and the backtest rerun after you apply."))
     if st.button(tx("更新股票池", "Refresh universe")):
         try:
@@ -191,7 +226,7 @@ def render_sidebar(logo: str) -> dict:
     st.markdown("[EF Lab](https://eugenefinance.tech)")
     st.markdown("[GitHub](https://github.com/hantrleko/ah-pairs-dashboard)")
     start_day, end_day = st.session_state["applied_dates"]
-    _sync_query(a_code, lang, start_day, end_day)
+    _sync_query(a_code, lang, start_day, end_day, st.session_state["applied_params"], bool(st.session_state["applied_costs_on"]))
     return {
         "universe": universe,
         "picked": picked,

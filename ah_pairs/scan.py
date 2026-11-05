@@ -17,6 +17,8 @@ from ah_pairs.paths import SCAN_DIR
 from ah_pairs.portfolio import portfolio_summary
 from ah_pairs.universe import liquid_subset, load_universe
 
+SCAN_SPEC_DEFAULT = "short=0;cost=statutory;fill=next_close"
+
 
 def scan_pairs(
     universe: pd.DataFrame,
@@ -61,6 +63,33 @@ def scan_pairs(
     summary_frame = pd.DataFrame(rows)
     return_frame = pd.DataFrame(returns).sort_index()
     return summary_frame, return_frame
+
+
+def scan_spec(allow_short_a: bool = False) -> str:
+    short = "1" if allow_short_a else "0"
+    return f"short={short};cost=statutory;fill=next_close"
+
+
+def with_scan_meta(summary: pd.DataFrame, start, end, asof=None, allow_short_a: bool = False) -> pd.DataFrame:
+    """给摘要加上生成日、样本区间和规格。页面用这三列说明这不是当日排名。"""
+    out = summary.copy()
+    out["asof"] = str(pd.Timestamp(asof).date()) if asof is not None else pd.Timestamp.today().strftime("%Y-%m-%d")
+    out["start"] = str(pd.Timestamp(start).date())
+    out["end"] = str(pd.Timestamp(end).date())
+    out["spec"] = scan_spec(allow_short_a)
+    return out
+
+
+def scan_is_older(asof, cache_stamp) -> bool:
+    """扫描生成日早于行情缓存的写入日。无法解析时不当作过期。"""
+    try:
+        scanned = pd.Timestamp(str(asof)[:10]).normalize()
+        cached = pd.Timestamp(str(cache_stamp)[:10]).normalize()
+    except (TypeError, ValueError):
+        return False
+    if pd.isna(scanned) or pd.isna(cached):
+        return False
+    return bool(scanned < cached)
 
 
 def write_scan(summary: pd.DataFrame, returns: pd.DataFrame, folder=SCAN_DIR) -> None:
@@ -114,6 +143,7 @@ def main() -> None:
         universe = liquid_subset(universe)
     params = StrategyParams(allow_short_a=bool(args.allow_short_a), costs=CostParams())
     summary, returns = scan_pairs(universe, args.start, args.end, params)
+    summary = with_scan_meta(summary, args.start, args.end, allow_short_a=bool(args.allow_short_a))
     write_scan(summary, returns)
     portfolio = portfolio_summary(returns) if not returns.empty else {"ok": False}
     print(f"写出 {SCAN_DIR / 'summary.parquet'} ，{len(summary)} 行。")

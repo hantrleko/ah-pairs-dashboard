@@ -9,7 +9,7 @@ import streamlit as st
 from ah_pairs.analysis import analyze_frame
 from ah_pairs.i18n import tx
 from ah_pairs.portfolio import portfolio_summary
-from ah_pairs.scan import read_scan
+from ah_pairs.scan import SCAN_SPEC_DEFAULT, read_scan, scan_is_older
 from ah_pairs.universe import liquid_subset
 from ui.cache import cached_pair
 from ui.format import follow_pair_selection, pct, rank_lines, render_quick_compare, show_table
@@ -21,8 +21,8 @@ def _portfolio_caption(summary: dict) -> None:
         return
     st.markdown(
         tx(
-            f"等风险组合：**{summary['n_pairs']}** 对，{summary['n_days']} 天，净收益 {pct(summary['total_return'])}，夏普 {summary['sharpe']:.2f}，最大回撤 {pct(summary['max_drawdown'])}。权重是过去 60 日策略波动的倒数，用到的是前一天的波动。这不是无风险组合。",
-            f"Equal-risk book: **{summary['n_pairs']}** pairs, {summary['n_days']} days, net {pct(summary['total_return'])}, Sharpe {summary['sharpe']:.2f}, max drawdown {pct(summary['max_drawdown'])}. Weights are inverse 60-day strategy volatility, lagged one day. This is not risk-free.",
+            f"等风险组合：**{summary['n_pairs']}** 对，{summary['n_days']} 天，净收益 {pct(summary['total_return'])}，夏普 {summary['sharpe']:.2f}，最大回撤 {pct(summary['max_drawdown'])}。权重是过去 60 日策略波动的倒数，用到的是前一天的波动。这不是无风险组合，也不是持仓建议。",
+            f"Equal-risk book: **{summary['n_pairs']}** pairs, {summary['n_days']} days, net {pct(summary['total_return'])}, Sharpe {summary['sharpe']:.2f}, max drawdown {pct(summary['max_drawdown'])}. Weights are inverse 60-day strategy volatility, lagged one day. This is not risk-free and not a position recommendation.",
         )
     )
 
@@ -38,8 +38,25 @@ def render_scan(page) -> None:
     saved_summary, saved_returns = read_scan()
     if isinstance(saved_summary, pd.DataFrame) and not saved_summary.empty:
         st.markdown(tx("**已保存的离线扫描**", "**Saved offline scan**"))
-        st.caption(tx("点一行就切换到那一对。", "Select a row to switch to that pair."))
-        follow_pair_selection(show_table(saved_summary, key="saved_scan_table", selectable=True), saved_summary)
+        asof = str(saved_summary["asof"].iloc[0]) if "asof" in saved_summary.columns else ""
+        sample_start = str(saved_summary["start"].iloc[0]) if "start" in saved_summary.columns else ""
+        sample_end = str(saved_summary["end"].iloc[0]) if "end" in saved_summary.columns else ""
+        spec = str(saved_summary["spec"].iloc[0]) if "spec" in saved_summary.columns else ""
+        if spec == SCAN_SPEC_DEFAULT:
+            spec_text = tx("不做空，法定成本，次日收盘。", "Short A-shares off, statutory costs, next-close fill.")
+        else:
+            spec_text = spec
+        st.caption(
+            tx(
+                f"生成日 {asof}。样本 {sample_start} 至 {sample_end}。{spec_text}这是一次离线描述，不是当日强弱排行。",
+                f"As of {asof}. Sample {sample_start} to {sample_end}. {spec_text} This is one offline description, not a live ranking.",
+            )
+        )
+        if scan_is_older(asof, getattr(page, "cache_stamp", "")):
+            st.caption(tx("扫描早于当前行情。", "The scan is older than the current prices."))
+        st.caption(tx("点一行就切换到那一对。p 值更小只表示这次离线样本更接近协整，不是最协整的发现。", "Select a row to open that pair. A smaller p-value only means this offline sample is closer to cointegration."))
+        hidden = [name for name in ("asof", "spec", "start", "end") if name in saved_summary.columns]
+        follow_pair_selection(show_table(saved_summary.drop(columns=hidden), key="saved_scan_table", selectable=True), saved_summary)
         rank_lines(saved_summary)
         if isinstance(saved_returns, pd.DataFrame) and not saved_returns.empty:
             _portfolio_caption(portfolio_summary(saved_returns))

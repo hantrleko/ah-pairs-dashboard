@@ -816,3 +816,170 @@ def test_read_scan_prefers_the_newer_folder(tmp_path, monkeypatch):
     summary, _returns = read_scan()
     assert summary.iloc[0]["A"] == "2"
 
+
+def test_spec_link_roundtrip_defaults_short_off_and_rejects_bad_hedge():
+    from datetime import date
+
+    from ah_pairs.links import encode_spec, parse_spec_query
+
+    today = date(2026, 11, 5)
+    raw = {
+        "pair": "601318",
+        "lang": "zh",
+        "start": "2018-01-01",
+        "end": "2026-11-02",
+        "hedge": "kalman",
+        "hw": "80",
+        "zw": "40",
+        "zin": "2.5",
+        "zout": "0.5",
+        "fill": "same_close",
+        "short": "1",
+        "cost": "zero",
+    }
+    spec = parse_spec_query(raw, today=today)
+    assert spec.rejected == ()
+    assert spec.hedge == "kalman"
+    assert spec.hedge_window == 80
+    assert spec.z_window == 40
+    assert spec.entry_z == 2.5
+    assert spec.exit_z == 0.5
+    assert spec.fill == "same_close"
+    assert spec.allow_short_a is True
+    assert spec.include_costs is False
+    encoded = encode_spec(spec, pair="601318", lang="zh")
+    assert set(encoded) == {
+        "pair",
+        "lang",
+        "start",
+        "end",
+        "hedge",
+        "hw",
+        "zw",
+        "zin",
+        "zout",
+        "fill",
+        "short",
+        "cost",
+    }
+    assert encoded["short"] == "1"
+    assert encoded["cost"] == "zero"
+    assert "beta" not in encoded
+    again = parse_spec_query(encoded, today=today)
+    assert again.rejected == ()
+    assert again == spec
+
+    missing = parse_spec_query({}, today=today)
+    assert missing.allow_short_a is False
+    assert missing.include_costs is True
+    assert missing.hedge == "rolling"
+    assert missing.entry_z == 2.0
+    assert missing.exit_z == 0.5
+    assert missing.fill == "next_close"
+    assert missing.start == date(2018, 1, 1)
+    assert missing.end == today
+    assert missing.rejected == ()
+
+    bad = parse_spec_query({"hedge": "foo", "short": "yes", "hw": "10", "zin": "2", "zout": "0.5"}, today=today)
+    assert bad.hedge == "rolling"
+    assert bad.allow_short_a is False
+    assert bad.hedge_window == 120
+    assert bad.entry_z == 2.0
+    assert bad.exit_z == 0.5
+    assert bad.rejected == ("hedge", "hw", "short")
+
+    flipped = parse_spec_query({"start": "2026-12-01", "end": "2018-01-01"}, today=today)
+    assert flipped.start == date(2018, 1, 1)
+    assert flipped.end == today
+    assert flipped.rejected == ("start", "end")
+
+
+def test_h_dividend_tax_is_zero_when_flat_and_does_not_change_the_main_backtest():
+    import re
+
+    from ah_pairs.backtest import run_backtest
+    from ah_pairs.dividends import h_dividend_return_drag, h_dividend_tax_cny, h_dividend_tax_row
+    from ah_pairs.i18n import set_lang
+    from ah_pairs.labels import cost_case_label
+
+    idx = pd.to_datetime(["2024-06-03", "2024-06-04"])
+    dividend = pd.Series([1.5, 2.0], index=idx)
+    fx = pd.Series([0.90, 0.80], index=idx)
+    long_h = pd.Series([True, False], index=idx)
+    tax = h_dividend_tax_cny(dividend, fx, long_h)
+    assert tax.iloc[0] == pytest.approx(1.5 * 0.2 * 0.90)
+    assert tax.iloc[1] == 0.0
+
+    held = pd.DataFrame(
+        {
+            "w_h": [0.0, 0.4, 0.4],
+            "w_a": [0.0, -0.6, -0.6],
+            "h_hkd": [10.0, 10.0, 10.0],
+            "ret_strat": [0.0, 0.0, 0.0],
+            "cost": [0.0, 0.0, 0.0],
+            "borrow": [0.0, 0.0, 0.0],
+        },
+        index=pd.to_datetime(["2024-06-03", "2024-06-04", "2024-06-05"]),
+    )
+    cash = pd.Series([2.0], index=pd.to_datetime(["2024-06-05"]))
+    drag = h_dividend_return_drag(held, cash)
+    assert drag.iloc[0] == 0.0
+    assert drag.iloc[1] == 0.0
+    assert drag.iloc[2] == pytest.approx(0.2 * 2.0 / 10.0 * 0.4)
+
+    sample = pd.bdate_range("2020-01-02", periods=20)
+    prices = pd.DataFrame(
+        {
+            "z": np.concatenate([np.zeros(5), np.full(10, -3.0), np.zeros(5)]),
+            "beta": np.ones(20),
+            "ret_a": np.full(20, 0.001),
+            "ret_h": np.zeros(20),
+            "h_hkd": np.full(20, 10.0),
+        },
+        index=sample,
+    )
+    worked, trades, stats = run_backtest(prices, _params(fill="same_close"))
+    before = float(stats["total_return"])
+    original = worked["ret_strat"].copy()
+    missing = h_dividend_tax_row(worked, None, trades)
+    assert missing["status"].iloc[0] == "missing"
+    assert missing["code"].iloc[0] == "h_div_tax"
+    assert worked["ret_strat"].equals(original)
+    assert float(run_backtest(prices, _params(fill="same_close"))[2]["total_return"]) == before
+    assert (worked["w_h"] <= 0).all()
+    taxed = h_dividend_tax_row(worked, pd.Series([1.0], index=sample[[8]]), trades)
+    assert taxed["status"].iloc[0] == "ok"
+    assert taxed["净收益"].iloc[0] == pytest.approx(before)
+    set_lang("en")
+    try:
+        label = cost_case_label("h_div_tax")
+        assert label == "H dividend tax 20%"
+        assert re.search(r"[\u4e00-\u9fff]", label) is None
+    finally:
+        set_lang("zh")
+
+
+def test_read_h_dividends_stays_on_disk(tmp_path):
+    from ah_pairs.data import read_h_dividends
+
+    assert read_h_dividends("02318", tmp_path) is None
+
+
+def test_scan_snapshot_records_asof_and_spec(tmp_path):
+    from ah_pairs.scan import read_scan, scan_is_older, with_scan_meta, write_scan
+
+    summary = with_scan_meta(
+        pd.DataFrame({"A": ["601318"], "公司": ["平安"]}),
+        "2018-01-01",
+        "2026-11-02",
+        asof="2026-11-01",
+    )
+    write_scan(summary, pd.DataFrame({"x": [1.0]}), tmp_path)
+    got, _returns = read_scan(tmp_path)
+    assert got["asof"].iloc[0] == "2026-11-01"
+    assert got["spec"].iloc[0] == "short=0;cost=statutory;fill=next_close"
+    assert got["start"].iloc[0] == "2018-01-01"
+    assert scan_is_older("2026-11-01", "2026-11-05 22:55")
+    assert not scan_is_older("2026-11-05", "2026-11-02 22:55")
+    assert not scan_is_older("2026-11-05", "无本地缓存")
+

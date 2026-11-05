@@ -1,6 +1,6 @@
 # A+H 协整与动态配对交易
 
-V1.2。EF Lab 的 A+H 股协整配对交易研究看板。版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+V1.4。EF Lab 的 A+H 股协整配对交易研究看板。版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 A 股和 H 股不能互相兑换。这里的结果是统计套利的历史回测，不是无风险套利。p 值不是获利概率。
 
@@ -19,7 +19,7 @@ python -m ah_pairs --a 601318 --start 2018-01-01
 python -m ah_pairs --a 601318 --start 2018-01-01 --allow-short-a
 ```
 
-侧栏可以切换简体、繁体和英文。公司名称仍用数据里的中文。
+侧栏可以切换简体、繁体和英文。公司名称仍用数据里的中文。点「应用参数」后，地址栏会带上股票、语言、日期、对冲、窗口、开平仓、成交、是否做空，以及成本是法定档还是零。佣金小数、卡尔曼 δ 和再平衡带不在链接里。
 
 行情缓存在 `data/cache`，新文件是 Parquet，旧的 CSV 仍会读取。缓存目录可以用 `AH_CACHE_DIR` 改掉；Railway 上若挂了卷，会使用 `RAILWAY_VOLUME_MOUNT_PATH`。股票池快照在 `data/ah_universe.csv`，看板侧栏可以重新从 AKShare 拉取。
 
@@ -30,7 +30,7 @@ python -m ah_pairs.scan --start 2018-01-01
 python -m ah_pairs.scan --all --start 2018-01-01
 ```
 
-默认只扫流动性较好的子集。`--all` 扫描名单里的全部公司，结果写到 `data/cache/scan/`。设置 `AH_PUBLISH_SCAN=1` 时同时写到 `data/scan_snapshot/`。页面读这两处里较新的一份。等风险组合用各对策略收益的倒数波动加权，权重滞后一天，不是无风险组合。点扫描表的一行会打开那一对。
+默认只扫流动性较好的子集。`--all` 扫描名单里的全部公司，结果写到 `data/cache/scan/`。设置 `AH_PUBLISH_SCAN=1` 时同时写到 `data/scan_snapshot/`。页面读这两处里较新的一份。流动性子集的摘要可以放进仓库的 `data/scan_snapshot/`，表上带生成日和规格；普通推送不会跑扫描。等风险组合用各对策略收益的倒数波动加权，权重滞后一天，不是无风险组合。点扫描表的一行会打开那一对。回测页的成本对照可以另加一行 H 股现金红利 20% 预扣，主回测仍用复权价；没有本地分红缓存时这一行留空。
 
 收盘后的 z 提醒只在设置了 `ALERT_WEBHOOK_URL` 时向外发送。没有这个地址时，命令只打印报文并以 0 退出：
 

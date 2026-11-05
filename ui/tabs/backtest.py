@@ -8,6 +8,8 @@ import streamlit as st
 
 from ah_pairs.backtest import later_window_performance, params_to_json
 from ah_pairs.bundle import research_zip
+from ah_pairs.data import load_h_dividends, read_h_dividends
+from ah_pairs.dividends import h_dividend_tax_row
 from ah_pairs.export import equity_png, metrics_latex, metrics_table, spread_png
 from ah_pairs.i18n import tx
 from ah_pairs.labels import cost_case_label, walk_row_label
@@ -240,8 +242,28 @@ def render_backtest(page) -> None:
     elif st.session_state.get("wf_key") == wf_key:
         st.info(wf.get("message") or tx("这段样本做不了 walk-forward。", "This sample cannot support a walk-forward."))
     st.markdown(tx("**成本敏感度**", "**Cost sensitivity**"))
-    costs = _cost_display(cached_costs(token, frame))
+    div_key = f"{page.picked.h_code}|dividends"
+    if st.button(tx("下载 H 股现金分红", "Download H-share cash dividends"), key="load_h_div"):
+        try:
+            with st.spinner(tx("下载 H 股现金分红…", "Downloading H-share cash dividends…")):
+                st.session_state[div_key] = load_h_dividends(page.picked.h_code, refresh=True)
+                st.session_state.pop("h_div_error", None)
+        except Exception as exc:
+            st.session_state["h_div_error"] = str(exc)
+    if st.session_state.get("h_div_error") and div_key not in st.session_state:
+        st.caption(tx(f"分红没有下载下来：{st.session_state['h_div_error']}", f"Dividend download failed: {st.session_state['h_div_error']}"))
+    dividends = st.session_state.get(div_key)
+    if dividends is None:
+        dividends = read_h_dividends(page.picked.h_code)
+    tax_row = h_dividend_tax_row(frame, dividends, page.result.get("trades"))
+    costs = _cost_display(pd.concat([cached_costs(token, frame), tax_row.drop(columns=["status"])], ignore_index=True))
     show_table(costs, _number_config(costs))
+    if dividends is None:
+        st.caption(tx("还没有 H 股现金分红缓存。点上面的按钮才会下载。这一行先空着，主回测仍用复权价。", "No cached H-share cash dividends yet. The button above is what downloads them. This row stays blank, and the main backtest still uses adjusted closes."))
+    elif tax_row["status"].iloc[0] != "ok":
+        st.caption(tx("没有分红序列。这一行不算。主回测仍用复权价。", "No dividend series. This row is not computed. The main backtest still uses adjusted closes."))
+    else:
+        st.caption(tx("这一行只在前一日持有 H 股多头时，按现金红利的 20% 预扣，并用当日汇率换成人民币。空仓和做空 H 股不扣。这是预扣近似，不是券商交割单。主回测没有改用这一行。", "This row withholds 20% of the cash dividend, converted at that day's exchange rate, only when the book was long H the day before. Flat and short-H days pay nothing. It is a withholding approximation, not a broker statement. The main backtest does not switch to this row."))
     sensitivity = page.result.get("sensitivity")
     if isinstance(sensitivity, pd.DataFrame) and not sensitivity.empty:
         st.markdown(tx("**开仓阈值敏感性**", "**Entry-threshold sensitivity**"))
