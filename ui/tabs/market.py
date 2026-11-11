@@ -22,7 +22,7 @@ def _block(page, series, error: str, column: str, kind: str, source: str, note: 
     if error:
         st.warning(error)
     if series is None or series.dropna().empty:
-        st.info(tx("还没有本地缓存。点上面的更新，才会去下载。", "There is no local cache yet. Use the update button to download it."))
+        st.info(tx("还没有缓存。点上面的更新才会下载。定时任务负责写入已发布副本。", "There is no cache yet. The update button downloads it. The scheduled job writes the published copy."))
         return
     common = page.common.copy()
     common[column] = series.reindex(common.index)
@@ -86,8 +86,8 @@ def _cached_series(loader, refresh, error_key: str, button: str):
 def render_market(page) -> None:
     st.markdown(
         tx(
-            "三列都是市场层面的序列，不是这只股票自己的持仓。北向日频已经停止。南向和恒生沪深港通 AH 股溢价指数（HSAHP）用来接上停更之后的对照。指数高于 100 表示样本内 A 股平均更贵。打开页面只读已经缓存的南向和溢价指数。",
-            "All three series are market-wide. None is this stock’s own holding. Daily northbound disclosure has stopped. Southbound flow and the Hang Seng Stock Connect China AH Premium Index (HSAHP) continue the comparison. An index above 100 means A-shares are richer than H-shares on average. Opening the page only reads the southbound and premium-index cache.",
+            "三列都是市场层面的序列，不是这只股票自己的持仓。北向日频已经停止。南向和恒生沪深港通 AH 股溢价指数（HSAHP）用来接上停更之后的对照。指数高于 100 表示样本内 A 股平均更贵。打开页面只读缓存或已发布副本，不下载。",
+            "All three series are market-wide. None is this stock’s own holding. Daily northbound disclosure has stopped. Southbound flow and the Hang Seng Stock Connect China AH Premium Index (HSAHP) continue the comparison. An index above 100 means A-shares are richer than H-shares on average. Opening the page only reads the cache or the published copy. It does not download.",
         )
     )
     st.markdown(tx("**北向资金**", "**Northbound**"))
@@ -116,5 +116,5 @@ def render_market(page) -> None:
         "hsahp",
         "line",
         f"HSAHP{source_text}",
-        tx("回归用的是指数的日变化，不是指数水平。更新时先试 Yahoo，再试东财。", "The regression uses the daily change in the index, not its level. An update tries Yahoo, then East Money."),
+        tx("回归用的是指数的日变化，不是指数水平。更新时先试 Yahoo，再试新浪，最后试东财。", "The regression uses the daily change in the index, not its level. An update tries Yahoo, then Sina, then East Money."),
     )

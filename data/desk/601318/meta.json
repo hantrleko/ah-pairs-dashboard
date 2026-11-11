@@ -1,0 +1,66 @@
+{
+  "a_code": "601318",
+  "start": "2018-01-01",
+  "end": "2026-11-10",
+  "asof": "2026-11-10",
+  "sample_end": "2026-11-10",
+  "include_costs": true,
+  "params": {
+    "hedge": "rolling",
+    "hedge_window": 120,
+    "z_window": 60,
+    "entry_z": 2.0,
+    "exit_z": 0.5,
+    "stop_z": 4.0,
+    "kalman_delta": 0.0001,
+    "kalman_delta_auto": true,
+    "allow_short_a": false,
+    "require_positive_beta": true,
+    "fill": "next_close",
+    "beta_band": 0.1,
+    "costs": {
+      "a_commission": 0.00025,
+      "h_commission": 0.0004,
+      "a_borrow_annual": 0.05,
+      "h_borrow_annual": 0.02,
+      "use_statutory_stamp": true,
+      "a_stamp_sell": 0.0005,
+      "h_stamp": 0.001,
+      "slippage": 0.0,
+      "trading_days": 252
+    }
+  },
+  "walk": {
+    "scheme": "anchored-year",
+    "chosen_entry": 1.5,
+    "chosen_exit": 0.5,
+    "chosen_entries": [
+      1.5,
+      1.0,
+      1.0,
+      1.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0
+    ],
+    "chosen_exits": [
+      0.5,
+      0.75,
+      0.25,
+      0.25,
+      0.25,
+      0.25,
+      0.25,
+      1.0
+    ],
+    "n_folds": 8,
+    "n_trials": 192,
+    "valid_sharpe_median": 0.09935764337466242,
+    "valid_sharpe_min": -0.5111074441963276,
+    "valid_sharpe_max": 0.6556533349340136,
+    "train_end": "2018-12-31",
+    "valid_start": "2026-01-02",
+    "valid_end": "2026-11-10"
+  }
+}

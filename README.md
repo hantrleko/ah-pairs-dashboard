@@ -1,6 +1,6 @@
 # A+H 协整与动态配对交易
 
-V1.4。EF Lab 的 A+H 股协整配对交易研究看板。版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+V1.5。EF Lab 的 A+H 股协整配对交易研究看板。默认回测引擎仍是 v14，侧栏可以改到 v15。版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 A 股和 H 股不能互相兑换。这里的结果是统计套利的历史回测，不是无风险套利。p 值不是获利概率。
 
@@ -23,6 +23,15 @@ python -m ah_pairs --a 601318 --start 2018-01-01 --allow-short-a
 
 行情缓存在 `data/cache`，新文件是 Parquet，旧的 CSV 仍会读取。缓存目录可以用 `AH_CACHE_DIR` 改掉；Railway 上若挂了卷，会使用 `RAILWAY_VOLUME_MOUNT_PATH`。股票池快照在 `data/ah_universe.csv`，看板侧栏可以重新从 AKShare 拉取。
 
+诊断页可以把个股溢价减去恒生 AH 溢价指数再做 ADF，并点按钮做允许一次断点的 Gregory–Hansen。这两项都不替换 EG p 值。回测页另比较永远持 A、永远持 H 和按溢价切换，不做空。一组对照页可以按月做多溢价 z 最低的一组 A 股、做空对应 H 股，只读本地缓存。融券名单只在打开做空、并且名单覆盖到那一天时才限制空头。
+
+工作日 17:30（北京时间）的 GitHub Actions 运行 `python -m ah_pairs.refresh`，刷新行情、H 股分红、北向、南向、恒生 AH 溢价指数、融券标的名单、流动性扫描和今日全景，并预计算平安、工行、招行、石油在默认规格下的 walk-forward 和稳定性地图。结果写入 `data/published/` 和 `data/desk/`，再提交回仓库。页面先读 `data/cache`，没有文件时读已发布副本。打开页面不下载这些序列。结束日不早于样本截止日、并且比该日晚不超过 10 天、其余规格一致时直接显示，并写明这一天。改了参数仍要点按钮。v15 的样本外折不在这次预计算里。
+
+```bash
+python -m ah_pairs.refresh
+python -m ah_pairs.refresh --codes 601318 --skip-scan
+```
+
 全市场扫描不在页面里跑：
 
 ```bash
@@ -30,9 +39,11 @@ python -m ah_pairs.scan --start 2018-01-01
 python -m ah_pairs.scan --all --start 2018-01-01
 ```
 
-默认只扫流动性较好的子集。`--all` 扫描名单里的全部公司，结果写到 `data/cache/scan/`。设置 `AH_PUBLISH_SCAN=1` 时同时写到 `data/scan_snapshot/`。页面读这两处里较新的一份。流动性子集的摘要可以放进仓库的 `data/scan_snapshot/`，表上带生成日和规格；普通推送不会跑扫描。等风险组合用各对策略收益的倒数波动加权，权重滞后一天，不是无风险组合。点扫描表的一行会打开那一对。回测页的成本对照可以另加一行 H 股现金红利 20% 预扣，主回测仍用复权价；没有本地分红缓存时这一行留空。
+默认只扫流动性较好的子集。`--all` 扫描名单里的全部公司，结果写到 `data/cache/scan/`。设置 `AH_PUBLISH_SCAN=1` 时同时写到 `data/scan_snapshot/`。页面读这两处里较新的一份。流动性子集的摘要可以放进仓库的 `data/scan_snapshot/`，表上带生成日和规格；普通推送不会跑扫描。等风险组合用各对策略收益的倒数波动加权，权重滞后一天，不是无风险组合。点扫描表的一行会打开那一对。回测页的成本对照可以另加一行 H 股现金红利 20% 预扣，主回测仍用复权价；没有本地分红缓存时这一行留空。侧栏的 v15 只改页顶指标；样本外折在回测页点按钮后才计算，打开页面不下载股息。
 
-收盘后的 z 提醒只在设置了 `ALERT_WEBHOOK_URL` 时向外发送。没有这个地址时，命令只打印报文并以 0 退出：
+今日全景在第一页。打开时只读已经写好的表；点按钮才按当前侧栏从本地缓存重算，不下载，也不跑协整。结束日更早或规格不同时，不拿那张表冒充。
+
+收盘后的 z 提醒仍会发给 `ALERT_WEBHOOK_URL`。信号页还可以另存邮件或 webhook，地址在本地缓存，不进 git。没有 `ALERT_SMTP_HOST` 和 `ALERT_SMTP_FROM` 时，邮件只保存，不发送。没有 webhook 时，命令只打印报文并以 0 退出：
 
 ```bash
 python -m ah_pairs.alerts --start 2018-01-01

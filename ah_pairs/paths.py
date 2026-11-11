@@ -23,3 +23,6 @@ def _cache_dir() -> Path:
 
 CACHE_DIR = _cache_dir()
 SCAN_DIR = CACHE_DIR / "scan"
+# 定时任务写入、可以进 git 的副本。冷启动的页面在 data/cache 为空时读这里。
+PUBLISHED_DIR = DATA_DIR / "published"
+DESK_DIR = DATA_DIR / "desk"

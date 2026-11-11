@@ -1,6 +1,7 @@
-"""|z| 越过开仓阈值时，向 ALERT_WEBHOOK_URL 发一条 JSON。
+"""|z| 越过开仓阈值时发送提醒。
 
-地址只从环境变量读取，不写进仓库。没有地址时只把报文打印出来，退出码仍是 0。
+ALERT_WEBHOOK_URL 仍从环境变量读取，不写进仓库。没有地址时只打印报文，退出码是 0。
+页面上保存的邮件和 webhook 写在缓存里。没有 SMTP 时邮件不发送。
 """
 
 from __future__ import annotations
@@ -81,29 +82,46 @@ def scan_alerts(codes: list[str], start: str, end: str, entry_z: float) -> list[
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="|z| 越过阈值时发送 webhook")
+    parser = argparse.ArgumentParser(description="|z| 越过阈值时按订阅发送提醒")
     parser.add_argument("--a", action="append", default=["601318", "601398", "600036", "601857"])
     parser.add_argument("--start", default="2018-01-01")
     parser.add_argument("--end", default=pd.Timestamp.today().strftime("%Y-%m-%d"))
     parser.add_argument("--entry", type=float, default=2.0)
     args = parser.parse_args()
+    from ah_pairs.subscriptions import deliver, load_subscriptions, subscribed_codes
+
+    subs = load_subscriptions()
+    codes = [str(code).zfill(6) for code in args.a]
+    extra = subscribed_codes()
+    if extra == ["*"]:
+        from ah_pairs.universe import liquid_subset
+
+        codes = [str(code).zfill(6) for code in liquid_subset(load_universe())["a_code"]]
+    else:
+        for code in extra:
+            if code not in codes:
+                codes.append(code)
+    scan_entry = min(float(args.entry), *[float(item.get("entry_z") or args.entry) for item in subs]) if subs else float(args.entry)
     try:
-        found = scan_alerts(args.a, args.start, args.end, args.entry)
+        found = scan_alerts(codes, args.start, args.end, scan_entry)
     except Exception as exc:
         print(f"提醒没有算出：{exc}")
         raise SystemExit(0)
     if not found:
         print("没有标的的 |z| 越过开仓阈值。")
         return
-    url = os.environ.get("ALERT_WEBHOOK_URL", "").strip()
-    print(json.dumps(found, ensure_ascii=False, indent=2))
-    if not url:
-        print("未设置 ALERT_WEBHOOK_URL，只打印报文，不发送。")
-        return
-    ok, note = send_webhook(url, {"alerts": found})
-    print(note)
-    if not ok:
+    visible = [item for item in found if abs(float(item["z"])) >= float(args.entry)]
+    if visible:
+        print(json.dumps(visible, ensure_ascii=False, indent=2))
+    if not os.environ.get("ALERT_WEBHOOK_URL", "").strip():
+        print("未设置 ALERT_WEBHOOK_URL，环境变量这条不发送。")
+    rows = deliver(found, env_entry=float(args.entry))
+    for row in rows:
+        print(f"{row['status']} {row['kind']} {row['target']} {row.get('note') or ''}".rstrip())
+    if any(row["status"] == "failed" for row in rows):
         raise SystemExit(1)
+    if not any(row["status"] == "sent" for row in rows):
+        print("没有向外发送。邮件没配 SMTP 时只保存，不发送。")
 
 
 if __name__ == "__main__":

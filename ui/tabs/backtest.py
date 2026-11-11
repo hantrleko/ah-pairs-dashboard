@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from ah_pairs.backtest import later_window_performance, params_to_json
+from ah_pairs.borrow import borrow_status, load_borrow
+from ah_pairs.holding import holding_comparison
 from ah_pairs.bundle import research_zip
 from ah_pairs.data import load_h_dividends, read_h_dividends
+from ah_pairs.desk import load_walk
 from ah_pairs.dividends import h_dividend_tax_row
 from ah_pairs.export import equity_png, metrics_latex, metrics_table, spread_png
 from ah_pairs.i18n import tx
@@ -102,7 +107,112 @@ def _bundle_downloads(page, walk_table) -> None:
         p2.download_button(tx("净值图 PNG", "Equity PNG"), equity_bytes, file_name=f"{page.picked.a_code}_equity.png", mime="image/png", key="equity_png_backtest")
 
 
+def _holding_block(page) -> None:
+    table = holding_comparison(page.frame, page.params.costs)
+    if table.empty:
+        return
+    labels = {
+        "always_a": tx("永远持有 A", "Always hold A"),
+        "always_h": tx("永远持有 H", "Always hold H"),
+        "switch": tx("按溢价切换", "Switch on the premium"),
+    }
+    st.markdown(tx("**已经要持有这家公司**", "**If you were going to hold the company**"))
+    show_table(
+        pd.DataFrame(
+            {
+                tx("做法", "Choice"): [labels[code] for code in table["code"]],
+                tx("净收益", "Net"): [pct(value) for value in table["total_return"]],
+                tx("夏普", "Sharpe"): [num(value, 2) for value in table["sharpe"]],
+                tx("最大回撤", "Max drawdown"): [pct(value) for value in table["max_drawdown"]],
+                tx("成本", "Cost"): [pct(value) for value in table["total_cost"]],
+                tx("换仓次数", "Switches"): [int(value) for value in table["switches"]],
+            }
+        )
+    )
+    st.caption(
+        tx(
+            "这三行不做空。z < 0 持有 A，z ≥ 0 持有 H。和主回测一样，收盘后才知道信号，下一次两边都开市的收盘才换，当天涨跌仍算旧仓位。永远持有的两行也扣了建仓成本。它不替换上面的配对回测。",
+            "These three rows never short. Hold A when z < 0 and H when z ≥ 0. As in the main backtest, the signal is known after the close and the trade waits for the next close when both markets are open; that day’s move still belongs to the old holding. The two buy-and-hold rows also pay the entry cost. They do not replace the pairs backtest above.",
+        )
+    )
+
+
+def _borrow_block(page) -> None:
+    st.markdown(tx("**融券名单**", "**Borrow list**"))
+    if st.button(tx("更新融券名单", "Update the borrow list"), key="refresh_borrow"):
+        try:
+            with st.spinner(tx("下载融券标的…", "Downloading the borrow list…")):
+                load_borrow(refresh=True)
+        except Exception as exc:
+            st.info(str(exc))
+        else:
+            st.rerun()
+    status = borrow_status(page.picked.a_code)
+    if not status.get("ok"):
+        st.caption(tx("还没有融券名单。点上面的按钮才会下载。打开页面不下载。默认不做空，所以名单不会改上面的数字。", "There is no borrow list yet. The button downloads it. Opening the page does not. Shorting stays off by default, so the list does not change the figures above."))
+        return
+    ratio = status.get("margin_ratio")
+    ratio_text = "—" if ratio is None or not np.isfinite(ratio) else f"{ratio:.0%}"
+    if status["eligible"]:
+        line = tx(
+            f"名单日期 {status['asof']}，共 {status['n_names']} 只。{page.picked['name']} 在名单上，保证金比例 {ratio_text}。",
+            f"List date {status['asof']}, {status['n_names']} names. {page.picked['name']} is on it. Margin ratio {ratio_text}.",
+        )
+    else:
+        line = tx(
+            f"名单日期 {status['asof']}，共 {status['n_names']} 只。{page.picked['name']} 不在名单上。",
+            f"List date {status['asof']}, {status['n_names']} names. {page.picked['name']} is not on it.",
+        )
+    st.caption(line)
+    st.caption(
+        tx(
+            "保证金比例不是融券年化费率，回测费率仍用侧栏。名单只覆盖下载到的日期。打开做空之后，这些日子里不在名单上就不能做空 A；更早的日子仍按开关，不会把今天的资格套到整段历史。默认关闭时，名单不改上面的数字。",
+            "The margin ratio is not the annual borrow fee. The backtest still uses the sidebar fee. The list covers only the dates that were downloaded. After shorting is turned on, a name off the list cannot be shorted on those dates. Earlier dates still follow the switch. Today’s eligibility is not pasted onto the whole history. While the switch stays off, the list does not change the figures above.",
+        )
+    )
+
+
 def render_backtest(page) -> None:
+    if getattr(page, "engine", "v14") == "v15":
+        from ah_pairs.v15.report import result_key
+        from ah_pairs.v15.walkforward import write_folds, walk_forward
+
+        key = result_key(page.picked.a_code, page.start_day, page.end_day, page.params.allow_short_a)
+        st.markdown(tx("**V1.5 样本外**", "**V1.5 out of sample**"))
+        st.caption(tx("这一步只在按下按钮后运行。它不改 v14 的回测，结果写到 output/wf_v15/。折数不足 4 时，下面的表不能当成稳定结论。", "This runs only after the button. It does not change the v14 backtest. Results go to output/wf_v15/. Fewer than 4 folds is not a stable claim."))
+        if st.button(tx("计算 V1.5 样本外折", "Run the V1.5 out-of-sample folds"), key="run_v15_wf"):
+            with st.spinner(tx("按折选择参数并做 Reality Check…", "Choosing parameters by fold and running the reality check…")):
+                try:
+                    found = walk_forward(page.frame, allow_short_a=bool(page.params.allow_short_a), seed=7)
+                    target = Path("output") / "wf_v15" / f"{page.picked.a_code}_{page.picked.h_code}.parquet"
+                    if isinstance(found.get("folds"), pd.DataFrame) and len(found["folds"]):
+                        write_folds(found["folds"], target)
+                    st.session_state[key] = found
+                    st.session_state.pop("v15_error", None)
+                    st.rerun()
+                except Exception as exc:
+                    st.session_state["v15_error"] = str(exc)
+        if st.session_state.get("v15_error") and key not in st.session_state:
+            st.caption(tx(f"V1.5 没有算完：{st.session_state['v15_error']}", f"V1.5 did not finish: {st.session_state['v15_error']}"))
+        found = st.session_state.get(key)
+        if isinstance(found, dict) and isinstance(found.get("folds"), pd.DataFrame) and len(found["folds"]):
+            show = found["folds"].copy()
+            for column in ("test_start", "test_end"):
+                show[column] = pd.to_datetime(show[column]).dt.date.astype(str)
+            show_table(
+                show,
+                column_config={
+                    "oos_ret": st.column_config.NumberColumn("oos_ret", format="%.2%"),
+                    "oos_dd": st.column_config.NumberColumn("oos_dd", format="%.2%"),
+                    "blocked_share": st.column_config.NumberColumn("blocked_share", format="%.0%"),
+                    "oos_sharpe": st.column_config.NumberColumn("oos_sharpe", format="%.2f"),
+                    "rc_p": st.column_config.NumberColumn("rc_p", format="%.3f"),
+                    "spa_p": st.column_config.NumberColumn("spa_p", format="%.3f"),
+                },
+            )
+            if bool(show["implausible"].any()) if "implausible" in show.columns else False:
+                st.caption(tx("有一折样本外夏普高于 2。这格标成 implausible，先核对成本是不是漏了，不要直接采用。", "One fold has an out-of-sample Sharpe above 2. It is marked implausible. Check for a missing cost before using it."))
+        st.caption(tx("下面的净值、成本和 walk-forward 仍是 v14。不要把它们读成 V1.5 的样本外结果。", "The equity, costs and walk-forward below are still v14. They are not the V1.5 out-of-sample result."))
     stats = page.stats
     params = page.params
     frame = page.frame
@@ -152,13 +262,25 @@ def render_backtest(page) -> None:
         with st.spinner(tx("计算 walk-forward…", "Computing the walk-forward…")):
             wf = cached_walk(token, frame)
     else:
-        st.info(tx("这一步要试很多组阈值。点按钮后才计算，换参数后需要再点一次。", "This step searches many thresholds. It runs when you press the button, and again after the parameters change."))
+        loaded = load_walk(page)
+        if loaded is not None:
+            wf = loaded
+            st.caption(
+                tx(
+                    f"这是默认规格在 {loaded['asof']} 预计算的 walk-forward，样本到 {loaded['sample_end']}。结束日比这天晚不超过 10 天仍用这一份；更早的结束日不会用。对冲、窗口、开平仓、成本或起始日不同时，点按钮才重算，不会把这份结果当成新规格。",
+                    f"This is the default-spec walk-forward precomputed on {loaded['asof']}, through {loaded['sample_end']}. An end date up to 10 days later still uses it. An earlier end date does not. A different hedge, window, entry, exit, cost or start date is recomputed from the button. This result is not treated as that new specification.",
+                )
+            )
+        else:
+            st.info(tx("这一步要试很多组阈值。点按钮后才计算，换参数后需要再点一次。", "This step searches many thresholds. It runs when you press the button, and again after the parameters change."))
     oos = wf.get("oos_equity") if wf.get("ok") else None
     show_chart(equity_figure(page.view, oos=oos if isinstance(oos, pd.Series) else None), "chart_equity")
     oos_note = tx("绿线是各折验证段接起来的样本外净值。", "The green line stitches the validation slices. It is the out-of-sample path.") if isinstance(oos, pd.Series) and len(oos) else ""
     st.caption(meta(tx("策略净值和对照", "Strategy and benchmarks"), page.view.index, page.cache_stamp, tx("只持有 A、只持有 H、等权 A+H 用的是同一段日期。", "A-only, H-only and equal-weight A+H use the same dates.") + oos_note))
     short_text = tx("本回测允许做空 A 股，多数标的不一定能融到券，结果偏乐观。", "This backtest may short A-shares. Many names cannot be borrowed, so the result is optimistic.") if params.allow_short_a else tx("本回测不允许做空 A 股。A 股偏贵时不开仓。", "This backtest does not short A-shares. It stays flat when A is rich.")
     st.caption(short_text)
+    _holding_block(page)
+    _borrow_block(page)
     one_sided = page.result.get("n_one_sided", stats.get("n_one_sided", 0))
     common = page.result.get("n_common", stats.get("n_common", stats["n_days"]))
     show_table(
@@ -259,7 +381,7 @@ def render_backtest(page) -> None:
     costs = _cost_display(pd.concat([cached_costs(token, frame), tax_row.drop(columns=["status"])], ignore_index=True))
     show_table(costs, _number_config(costs))
     if dividends is None:
-        st.caption(tx("还没有 H 股现金分红缓存。点上面的按钮才会下载。这一行先空着，主回测仍用复权价。", "No cached H-share cash dividends yet. The button above is what downloads them. This row stays blank, and the main backtest still uses adjusted closes."))
+        st.caption(tx("还没有 H 股现金分红缓存。已发布副本里有的话会直接读。点上面的按钮才会下载。这一行先空着，主回测仍用复权价。", "No cached H-share cash dividends yet. A published copy is read when it exists. The button above is what downloads them. This row stays blank, and the main backtest still uses adjusted closes."))
     elif tax_row["status"].iloc[0] != "ok":
         st.caption(tx("没有分红序列。这一行不算。主回测仍用复权价。", "No dividend series. This row is not computed. The main backtest still uses adjusted closes."))
     else:

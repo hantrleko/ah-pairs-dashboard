@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ah_pairs.paths import CACHE_DIR
+from ah_pairs.paths import CACHE_DIR, PUBLISHED_DIR
+from ah_pairs.store import prefer, same_dir
 from ah_pairs.universe import a_to_yahoo, h_to_yahoo
 
 HISTORY_START = "2010-01-01"
@@ -138,16 +139,22 @@ def _eastmoney_close(kind: str, code: str) -> pd.Series:
 
 def get_close(
     ticker: str,
-    cache_dir: Path = CACHE_DIR,
+    cache_dir: Path | None = None,
     kind: str | None = None,
     code: str | None = None,
     refresh: bool = False,
 ) -> tuple[pd.Series, str]:
-    """返回 (收盘价, 来源)。来源是 cache、yahoo 或 eastmoney。"""
-    path = _cache_file(cache_dir, ticker)
+    """返回 (收盘价, 来源)。来源是 cache、published、yahoo 或 eastmoney。"""
+    directory = CACHE_DIR if cache_dir is None else cache_dir
+    path = _cache_file(directory, ticker)
     cached = _cached_series(path)
+    published = pd.Series(dtype=float)
+    if same_dir(directory, CACHE_DIR):
+        published = _cached_series(_cache_file(PUBLISHED_DIR / "prices", ticker))
     if not refresh and _cache_covers(cached):
         return cached, "cache"
+    if not refresh and _cache_covers(published):
+        return published, "published"
 
     yahoo_error = ""
     try:
@@ -168,9 +175,26 @@ def get_close(
         if not cached.empty:
             note = "沿用本地缓存" if not yahoo_error else "行情下载失败，沿用本地缓存"
             return cached, note
+        if not published.empty:
+            return published, "行情下载失败，沿用已发布缓存"
         raise RuntimeError(f"下载 {ticker} 失败。{yahoo_error}".strip())
     _write_series(path, fresh)
     return fresh, source
+
+
+def read_local_close(ticker: str, cache_dir: Path | None = None) -> pd.Series | None:
+    """只读缓存或已发布副本。没有文件就返回 None，不访问网络。"""
+    directory = CACHE_DIR if cache_dir is None else cache_dir
+    path = prefer(
+        _cache_file(directory, ticker),
+        _cache_file(PUBLISHED_DIR / "prices", ticker),
+        directory,
+        CACHE_DIR,
+    )
+    if path is None:
+        return None
+    series = _read_series(path)
+    return None if series.empty else series
 
 
 def get_fx(cache_dir: Path = CACHE_DIR, refresh: bool = False) -> tuple[pd.Series, str]:
@@ -286,10 +310,17 @@ def dividend_path(cache_dir: Path, ticker: str) -> Path:
     return cache_dir / f"{safe}.dividends.parquet"
 
 
-def read_h_dividends(h_code: str, cache_dir: Path = CACHE_DIR) -> pd.Series | None:
-    """只读本地缓存。没有文件时返回 None，不访问网络。"""
-    path = dividend_path(cache_dir, h_to_yahoo(h_code))
-    if not path.exists():
+def read_h_dividends(h_code: str, cache_dir: Path | None = None) -> pd.Series | None:
+    """只读本地文件。默认缓存没有时读已发布副本，不访问网络。"""
+    directory = CACHE_DIR if cache_dir is None else cache_dir
+    ticker = h_to_yahoo(h_code)
+    path = prefer(
+        dividend_path(directory, ticker),
+        dividend_path(PUBLISHED_DIR / "dividends", ticker),
+        directory,
+        CACHE_DIR,
+    )
+    if path is None:
         return None
     series = _read_series(path)
     series = series[np.isfinite(series) & (series > 0)]

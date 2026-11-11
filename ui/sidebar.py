@@ -43,8 +43,7 @@ def _bps(label: str, default: float, key: str) -> float:
     return st.number_input(label, min_value=0.0, max_value=50.0, value=default, step=0.5, key=key) / 10_000
 
 
-def render_sidebar(logo: str) -> dict:
-    st.image(logo, width=148)
+def render_sidebar() -> dict:
     lang = st.selectbox(
         tx("语言", "Language"),
         ["zh", "zh-Hant", "en"],
@@ -211,6 +210,18 @@ def render_sidebar(logo: str) -> dict:
             )
         )
     st.caption(tx("改完参数后要点「应用参数」，协整和回测才会重算。", "Cointegration and the backtest rerun after you apply."))
+    engine = st.radio(
+        tx("回测引擎", "Backtest engine"),
+        ["v14", "v15"],
+        index=0,
+        format_func=lambda code: "V1.4" if code == "v14" else "V1.5",
+        horizontal=True,
+        key="engine_version",
+        help=tx(
+            "默认仍是 V1.4。V1.5 的样本外折在回测页点按钮后才计算，不会覆盖 V1.4。",
+            "V1.4 stays the default. V1.5 out-of-sample folds run from a button on the backtest page and do not replace V1.4.",
+        ),
+    )
     if st.button(tx("更新股票池", "Refresh universe")):
         try:
             from ah_pairs.universe import refresh_universe
@@ -235,4 +246,5 @@ def render_sidebar(logo: str) -> dict:
         "params": st.session_state["applied_params"],
         "include_costs": bool(st.session_state["applied_costs_on"]),
         "reload": reload_prices,
+        "engine": engine if engine in {"v14", "v15"} else "v14",
     }

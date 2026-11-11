@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from ah_pairs.analysis import analyze_frame
+from ah_pairs.cross_section import load_local_panels, monthly_cheap_book
 from ah_pairs.i18n import tx
 from ah_pairs.portfolio import portfolio_summary
 from ah_pairs.scan import SCAN_SPEC_DEFAULT, read_scan, scan_is_older
@@ -118,3 +119,51 @@ def render_scan(page) -> None:
         stored = st.session_state.get("scan_returns")
         if isinstance(stored, pd.DataFrame):
             _portfolio_caption(portfolio_summary(stored))
+    _cross_section(page)
+
+
+def _cross_section(page) -> None:
+    st.markdown(tx("**月度截面**", "**Monthly cross-section**"))
+    st.caption(
+        tx(
+            "每月用当时已经知道的溢价 z，做多 A 最便宜的四分之一，并做空这些名字的 H 股。不做空 A。只读本地缓存，没有文件的股票跳过，这里不下载。",
+            "Each month, using only the premium z known at the time, go long the cheapest quartile of A-shares and short those names’ H-shares. A-shares are not shorted. This reads the local cache, skips names without a file, and does not download.",
+        )
+    )
+    xs_key = f"{page.start_day}|{page.end_day}|{page.params.z_window}|{int(page.include_costs)}"
+    if st.button(tx("计算月度截面", "Compute the monthly book"), key="run_cross_section"):
+        names = liquid_subset(page.universe)
+        with st.spinner(tx("只读本地行情…", "Reading local prices…")):
+            panels, skipped = load_local_panels(names, page.start_day, page.end_day)
+            result = monthly_cheap_book(panels, z_window=int(page.params.z_window), costs=page.params.costs)
+        result["skipped"] = skipped
+        st.session_state["xs_key"] = xs_key
+        st.session_state["xs_result"] = result
+    result = st.session_state.get("xs_result") if st.session_state.get("xs_key") == xs_key else None
+    if not isinstance(result, dict):
+        return
+    if not result.get("ok"):
+        st.info(result.get("message") or tx("月度截面没有结果。", "No monthly book."))
+        if result.get("skipped"):
+            st.caption(tx(f"跳过 {len(result['skipped'])} 只。", f"Skipped {len(result['skipped'])} names."))
+        return
+    st.markdown(
+        tx(
+            f"用了 **{result['n_names']}** 只本地行情，{result['n_months']} 个月，平均每月 {result['mean_book']:.1f} 只。净收益 {pct(result['total_return'])}，夏普 {result['sharpe']:.2f}，最大回撤 {pct(result['max_drawdown'])}，成本 {pct(result['total_cost'])}。",
+            f"**{result['n_names']}** names from the local cache, {result['n_months']} months, {result['mean_book']:.1f} names a month on average. Net {pct(result['total_return'])}, Sharpe {result['sharpe']:.2f}, max drawdown {pct(result['max_drawdown'])}, costs {pct(result['total_cost'])}.",
+        )
+    )
+    skipped = result.get("skipped") or []
+    if skipped:
+        shown = "、".join(skipped[:12])
+        extra_zh = f" …共 {len(skipped)} 只" if len(skipped) > 12 else ""
+        extra_en = f" …{len(skipped)} in total" if len(skipped) > 12 else ""
+        st.caption(tx(f"这些代码没有本地行情，没有放进组合：{shown}{extra_zh}。", f"These codes had no local prices and were left out: {shown}{extra_en}."))
+    latest = "、".join(result.get("latest_book") or [])
+    signal_day = pd.Timestamp(result["latest_signal"]).date()
+    st.caption(
+        tx(
+            f"最近一次信号在 {signal_day}，选中 {latest}。z 窗口 {result['z_window']} 日。换仓在下一个收盘，当天涨跌仍算旧组合。这不是上面的单对回测，也不是持仓建议。",
+            f"The latest signal is {signal_day}: {latest}. The z window is {result['z_window']} days. The book changes at the next close, so that day’s move still belongs to the old book. This is not the single-pair backtest above, and it is not a position recommendation.",
+        )
+    )

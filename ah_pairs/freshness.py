@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from ah_pairs.paths import CACHE_DIR
+from ah_pairs.eflab_calendar import PRICE_LAG_DAYS
+from ah_pairs.paths import CACHE_DIR, PUBLISHED_DIR
 from ah_pairs.universe import a_to_yahoo, h_to_yahoo
 
 NORTHBOUND_DISCLOSURE_END = pd.Timestamp("2024-08-16")
-PRICE_LAG_DAYS = 7
 
 
 def price_is_stale(last_bar, requested_end, today) -> bool:
@@ -35,11 +35,15 @@ def northbound_stops_before(price_end, northbound_end) -> bool:
 
 def cache_candidates(ticker: str) -> list[Path]:
     safe = ticker.replace("=", "_").replace("^", "_")
-    return [CACHE_DIR / f"{safe}.parquet", CACHE_DIR / f"{safe}.csv"]
+    return [
+        CACHE_DIR / f"{safe}.parquet",
+        CACHE_DIR / f"{safe}.csv",
+        PUBLISHED_DIR / "prices" / f"{safe}.parquet",
+    ]
 
 
 def cache_written_at(a_code: str, h_code: str) -> str | None:
-    """本地行情缓存里最晚的写入时间。没有缓存文件时返回 None。"""
+    """本地缓存或已发布副本里最晚的写入时间。没有文件时返回 None。"""
     stamps = []
     for ticker in (a_to_yahoo(a_code), h_to_yahoo(h_code), "HKDCNY=X"):
         for path in cache_candidates(ticker):

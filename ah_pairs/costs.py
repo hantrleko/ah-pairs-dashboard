@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from ah_pairs.eflab_calendar import TRADING_DAYS
+
 # A 股印花税（卖方/买方）。2008-09-19 起改为卖方单边。
 _A_STAMP_SELLER_ONLY = pd.Timestamp("2008-09-19")
 _A_STAMP_HALVED = pd.Timestamp("2023-08-28")
@@ -33,7 +35,7 @@ class CostParams:
     a_stamp_sell: float = 0.0005
     h_stamp: float = 0.001
     slippage: float = 0.0
-    trading_days: int = 252
+    trading_days: int = TRADING_DAYS
 
 
 def _as_day(day) -> pd.Timestamp:

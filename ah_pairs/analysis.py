@@ -233,6 +233,7 @@ def entry_sensitivity(
     frame: pd.DataFrame,
     params: StrategyParams,
     entries: tuple[float, ...] = (1.0, 1.5, 2.0, 2.5, 3.0),
+    short_a_days: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """同一条 z 和 beta 上，只改开仓阈值，比较夏普和回撤。"""
     rows = []
@@ -244,7 +245,7 @@ def entry_sensitivity(
             stop = round(entry + 0.5, 1)
         try:
             trial = replace(params, entry_z=float(entry), stop_z=float(stop))
-            _path, _trades, stats = run_backtest(frame, trial)
+            _path, _trades, stats = run_backtest(frame, trial, short_a_days=short_a_days)
         except Exception:
             continue
         rows.append(

@@ -95,10 +95,13 @@ def cached_signals(a_code: str, h_code: str, warm: str, end: str, eval_start: st
 
 
 @st.cache_data(show_spinner=False)
-def cached_backtest(view: pd.DataFrame, token: str):
+def cached_backtest(view: pd.DataFrame, token: str, borrow_token: str = ""):
+    from ah_pairs.borrow import mask_from_borrow_token
+
     params = params_from_trade_token(token)
-    result, trades, stats = run_backtest(view, params)
-    sensitivity = entry_sensitivity(result, params)
+    mask = mask_from_borrow_token(view.index, borrow_token) if borrow_token else None
+    result, trades, stats = run_backtest(view, params, short_a_days=mask)
+    sensitivity = entry_sensitivity(result, params, short_a_days=mask)
     return result, trades, stats, sensitivity
 
 

@@ -3,6 +3,7 @@
 from ui.tabs.backtest import render_backtest
 from ui.tabs.diagnose import render_diagnose
 from ui.tabs.market import render_market
+from ui.tabs.panorama import render_panorama
 from ui.tabs.method import render_method
 from ui.tabs.scan import render_scan
 from ui.tabs.signal import render_signal
@@ -14,6 +15,7 @@ __all__ = [
     "render_diagnose",
     "render_market",
     "render_method",
+    "render_panorama",
     "render_scan",
     "render_signal",
     "render_stability",

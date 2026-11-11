@@ -88,3 +88,64 @@ def render_signal(page) -> None:
             st.write(note if ok else tx(f"没有发出去：{note}", f"Not sent: {note}"))
         elif not url:
             st.caption(tx("环境变量 ALERT_WEBHOOK_URL 为空，所以这里只展示报文。定时任务见仓库里的 alert workflow。", "ALERT_WEBHOOK_URL is empty, so this only shows the payload. The scheduled job is the alert workflow in the repo."))
+    _subscribe_block(page)
+
+
+def _subscribe_block(page) -> None:
+    from ah_pairs.desk import DESK_A_CODES
+    from ah_pairs.subscriptions import add_subscription, load_subscriptions, mask_target, remove_subscription, smtp_configured
+
+    st.markdown(tx("**订阅**", "**Subscription**"))
+    st.caption(
+        tx(
+            "地址写在本机缓存，不进 git。打开页面不发送。邮件要有 ALERT_SMTP_HOST 和 ALERT_SMTP_FROM，定时任务才会发出；现在没配就只保存。",
+            "The address stays in the local cache and is not committed. Opening the page does not send. Mail goes out from the scheduled job only when ALERT_SMTP_HOST and ALERT_SMTP_FROM are set.",
+        )
+    )
+    if smtp_configured():
+        st.caption(tx("发信服务器已配置，定时任务会发邮件。", "The mail server is configured, so the scheduled job can send mail."))
+    else:
+        st.caption(tx("还没有发信服务器，保存后的邮件不会发出。", "No mail server is configured, so a saved address is not emailed."))
+    if os.environ.get("ALERT_WEBHOOK_URL", "").strip():
+        st.caption(tx("环境变量里另有一个 webhook，定时任务也会发到那里。地址不在这里显示。", "ALERT_WEBHOOK_URL is also set, so the scheduled job posts there. The address is not shown here."))
+    with st.form("subscribe_form"):
+        kind = st.radio(
+            tx("方式", "Channel"),
+            ["email", "webhook"],
+            format_func=lambda code: tx("邮件", "Email") if code == "email" else "webhook",
+            horizontal=True,
+        )
+        target = st.text_input(tx("地址", "Address"))
+        scope = st.radio(
+            tx("范围", "Names"),
+            ["desk", "liquid"],
+            format_func=lambda code: tx("四只快捷股票", "Four shortcuts") if code == "desk" else tx("流动性子集", "Liquid subset"),
+            horizontal=True,
+        )
+        entry = st.number_input(
+            tx("开仓 |z|", "Entry |z|"),
+            min_value=0.1,
+            max_value=10.0,
+            value=round(float(page.params.entry_z), 1),
+            step=0.1,
+        )
+        submitted = st.form_submit_button(tx("保存订阅", "Save subscription"), use_container_width=True)
+    if submitted:
+        codes = list(DESK_A_CODES) if scope == "desk" else ["*"]
+        try:
+            add_subscription(kind, target, codes, float(entry))
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
+    for item in load_subscriptions():
+        label = tx("邮件", "Email") if item.get("kind") == "email" else "webhook"
+        codes = tx("流动性子集", "Liquid subset") if item.get("codes") == ["*"] else "、".join(item.get("codes") or [])
+        left, right = st.columns([4, 1])
+        left.caption(f"{label} {mask_target(item.get('kind', ''), item.get('target', ''))} · {codes} · |z|≥{float(item.get('entry_z') or 0):.1f}")
+        if item.get("stored") == "env":
+            right.caption(tx("环境变量", "Env"))
+            continue
+        if right.button(tx("删除", "Remove"), key=f"unsub_{item.get('id')}", use_container_width=True):
+            remove_subscription(str(item.get("id")))
+            st.rerun()

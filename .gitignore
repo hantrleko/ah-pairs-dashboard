@@ -5,5 +5,8 @@ __pycache__/
 .venv/
 venv/
 data/cache/
+data/subscriptions.json
+data/dividends/*.parquet
+output/
 .DS_Store
 node_modules/

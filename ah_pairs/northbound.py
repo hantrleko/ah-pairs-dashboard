@@ -11,7 +11,8 @@ from pathlib import Path
 import pandas as pd
 import statsmodels.api as sm
 
-from ah_pairs.paths import CACHE_DIR
+from ah_pairs.paths import CACHE_DIR, PUBLISHED_DIR
+from ah_pairs.store import prefer
 
 
 def _as_dates(values) -> pd.DatetimeIndex:
@@ -40,13 +41,13 @@ def _read_flow(path: Path) -> pd.Series:
     return series.sort_index()
 
 
-def load_northbound(cache_dir: Path = CACHE_DIR, refresh: bool = False) -> pd.Series:
-    path = _cache_path(cache_dir)
-    legacy = cache_dir / "northbound.csv"
-    if not refresh and path.exists():
-        return _read_flow(path)
-    if not refresh and legacy.exists():
-        return _read_flow(legacy)
+def load_northbound(cache_dir: Path | None = None, refresh: bool = False) -> pd.Series:
+    directory = CACHE_DIR if cache_dir is None else cache_dir
+    path = directory / "northbound.parquet"
+    if not refresh:
+        chosen = prefer(path, PUBLISHED_DIR / "northbound.parquet", directory, CACHE_DIR)
+        if chosen is not None:
+            return _read_flow(chosen)
 
     import akshare as ak
 

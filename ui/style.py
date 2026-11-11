@@ -59,7 +59,7 @@ div[data-testid="stCaptionContainer"] p { color: #5a6a7a; font-size: 0.82rem; }
 .brand h1 {
   margin: 0;
   color: #1f4e79;
-  font-size: 1.65rem;
+  font-size: 1.32rem;
   font-weight: 650;
   letter-spacing: -0.02em;
   line-height: 1.25;
@@ -78,9 +78,9 @@ div[data-testid="stCaptionContainer"] p { color: #5a6a7a; font-size: 0.82rem; }
   justify-content: space-between;
   align-items: flex-end;
   gap: 1.5rem;
-  padding: 0 0 0.55rem;
+  padding: 0 0 0.25rem;
   border-bottom: 1px solid #d5dee8;
-  margin: 0.15rem 0 0.55rem;
+  margin: 0.05rem 0 0.25rem;
 }
 .mast .kicker, .brand .kicker {
   margin: 0 0 0.2rem;

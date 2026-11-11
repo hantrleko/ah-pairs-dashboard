@@ -325,6 +325,7 @@ def core_signal_figure(
     exit_: float,
     stop: float,
     show_marks: bool = True,
+    height: int = 720,
 ) -> go.Figure:
     """价差、σ 带、开平仓和 z-score 放在同一张图里。"""
     spread = frame["spread"]
@@ -390,7 +391,7 @@ def core_signal_figure(
         row=1,
         col=1,
     )
-    fig = _layout(fig, L("价差、开平仓与 z-score", "Spread, trades and z-score"), height=720)
+    fig = _layout(fig, L("价差、开平仓与 z-score", "Spread, trades and z-score"), height=height)
     fig.update_layout(
         margin=dict(l=48, r=18, t=56, b=88),
         legend=dict(

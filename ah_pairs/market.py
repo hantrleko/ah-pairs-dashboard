@@ -1,7 +1,7 @@
 """市场层面的对照：南向资金，以及恒生沪深港通 AH 股溢价指数（HSAHP）。
 
 北向日频在 2024-08 之后停止。南向和 AH 溢价指数打开页面时只读本地缓存。
-用户点更新才访问网络。HSAHP 先试 Yahoo，再试东财；都失败时沿用已有缓存。
+用户点更新才访问网络。HSAHP 先试 Yahoo，再试新浪，最后试东财；都失败时沿用已有缓存。
 """
 
 from __future__ import annotations
@@ -13,7 +13,8 @@ from pathlib import Path
 import pandas as pd
 
 from ah_pairs.northbound import _as_dates, describe_northbound
-from ah_pairs.paths import CACHE_DIR
+from ah_pairs.paths import CACHE_DIR, PUBLISHED_DIR
+from ah_pairs.store import prefer
 
 
 @contextmanager
@@ -53,13 +54,21 @@ def _load_cached(path: Path, name: str) -> pd.Series | None:
     return series.sort_index()
 
 
-def read_southbound(cache_dir: Path = CACHE_DIR) -> pd.Series | None:
-    """只读本地文件，不访问网络。"""
-    return _load_cached(cache_dir / "southbound.parquet", "southbound")
+def _read_named(cache_dir: Path | None, filename: str, name: str) -> pd.Series | None:
+    directory = CACHE_DIR if cache_dir is None else cache_dir
+    path = prefer(directory / filename, PUBLISHED_DIR / filename, directory, CACHE_DIR)
+    if path is None:
+        return None
+    return _load_cached(path, name)
 
 
-def read_ah_premium_index(cache_dir: Path = CACHE_DIR) -> pd.Series | None:
-    return _load_cached(cache_dir / "hsahp.parquet", "hsahp")
+def read_southbound(cache_dir: Path | None = None) -> pd.Series | None:
+    """只读本地文件。默认缓存没有时读已发布副本，不访问网络。"""
+    return _read_named(cache_dir, "southbound.parquet", "southbound")
+
+
+def read_ah_premium_index(cache_dir: Path | None = None) -> pd.Series | None:
+    return _read_named(cache_dir, "hsahp.parquet", "hsahp")
 
 
 def _fetch_southbound() -> pd.Series:
@@ -113,8 +122,31 @@ def _eastmoney_hsahp() -> pd.Series:
     return series[~series.index.duplicated(keep="last")].dropna().sort_index()
 
 
+def _accept_index(series: pd.Series) -> pd.Series:
+    out = series[series > 0].dropna().sort_index()
+    out = out[~out.index.duplicated(keep="last")]
+    if out.empty or float(out.median()) < 30:
+        return pd.Series(dtype=float, name="hsahp")
+    out.name = "hsahp"
+    return out
+
+
+def _sina_hsahp() -> pd.Series:
+    import akshare as ak
+
+    raw = ak.stock_hk_index_daily_sina(symbol="HSAHP")
+    close_col = "close" if "close" in raw.columns else raw.columns[min(4, len(raw.columns) - 1)]
+    date_col = "date" if "date" in raw.columns else raw.columns[0]
+    series = pd.Series(
+        pd.to_numeric(raw[close_col], errors="coerce").to_numpy(),
+        index=_as_dates(raw[date_col]),
+        name="hsahp",
+    )
+    return _accept_index(series)
+
+
 def _pull_hsahp() -> tuple[pd.Series, str]:
-    """先 Yahoo，再东财。返回 (序列, 来源)。"""
+    """先 Yahoo，再新浪，最后东财。返回 (序列, 来源)。"""
     errors = []
     for ticker in ("HSAHP.HK", "^HSAHP"):
         try:
@@ -124,6 +156,13 @@ def _pull_hsahp() -> tuple[pd.Series, str]:
                 return series, f"yahoo:{ticker}"
         except Exception as exc:
             errors.append(f"{ticker}: {exc}")
+    try:
+        with _timeout(20):
+            series = _sina_hsahp()
+        if series is not None and not series.empty:
+            return series, "sina:HSAHP"
+    except Exception as exc:
+        errors.append(f"sina: {exc}")
     try:
         with _timeout(20):
             series = _eastmoney_hsahp()
@@ -143,6 +182,14 @@ def read_source(path: Path) -> str:
     note = path.with_suffix(".source")
     if note.exists():
         return note.read_text(encoding="utf-8").strip()
+    try:
+        from_default = path.parent.resolve() == Path(CACHE_DIR).resolve()
+    except OSError:
+        from_default = path.parent == CACHE_DIR
+    if from_default:
+        published = (PUBLISHED_DIR / path.name).with_suffix(".source")
+        if published.exists():
+            return published.read_text(encoding="utf-8").strip()
     return ""
 
 
@@ -165,13 +212,14 @@ def refresh_or_keep(cached: pd.Series | None, fetch, store) -> tuple[pd.Series, 
         raise
 
 
-def load_southbound(cache_dir: Path = CACHE_DIR, refresh: bool = False) -> pd.Series:
+def load_southbound(cache_dir: Path | None = None, refresh: bool = False) -> pd.Series:
     """港股通合计净买入，单位亿元。不是这一只 H 股的南向持仓。
 
-    refresh 为假时只读缓存。没有文件就抛出 FileNotFoundError，由页面提示再拉取。
+    refresh 为假时只读缓存或已发布副本。没有文件就抛出 FileNotFoundError，由页面提示再拉取。
     """
-    path = cache_dir / "southbound.parquet"
-    cached = _load_cached(path, "southbound")
+    directory = CACHE_DIR if cache_dir is None else cache_dir
+    path = directory / "southbound.parquet"
+    cached = read_southbound(directory)
     if not refresh:
         if cached is not None and not cached.empty:
             return cached
@@ -192,10 +240,11 @@ def load_southbound(cache_dir: Path = CACHE_DIR, refresh: bool = False) -> pd.Se
     return series
 
 
-def load_ah_premium_index(cache_dir: Path = CACHE_DIR, refresh: bool = False) -> pd.Series:
+def load_ah_premium_index(cache_dir: Path | None = None, refresh: bool = False) -> pd.Series:
     """恒生沪深港通 AH 股溢价指数收盘。100 表示样本内 A/H 平均平价，高于 100 表示 A 股更贵。"""
-    path = cache_dir / "hsahp.parquet"
-    cached = _load_cached(path, "hsahp")
+    directory = CACHE_DIR if cache_dir is None else cache_dir
+    path = directory / "hsahp.parquet"
+    cached = read_ah_premium_index(directory)
     if not refresh:
         if cached is not None and not cached.empty:
             return cached

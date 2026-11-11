@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from ah_pairs.data import unadjusted_log_columns
+from ah_pairs.desk import load_stability
 from ah_pairs.i18n import tx
 from ah_pairs.labels import slice_label
 from ah_pairs.plots import hedge_figure, reject_rate_figure, rolling_p_figure, stability_heatmap, static_resid_figure
@@ -84,9 +85,21 @@ def render_stability(page) -> None:
             st.session_state["stability"] = {"key": stability_key, **cached_stability(common)}
     saved = st.session_state.get("stability")
     if isinstance(saved, dict) and saved.get("key") != stability_key:
-        st.caption(tx("股票或日期变了，需要重新计算。", "The pair or the dates changed. Compute again."))
         saved = None
+    fresh_unadjusted = isinstance(saved_unadj, dict) and saved_unadj.get("key") == unadj_key
+    if not isinstance(saved, dict) and not fresh_unadjusted:
+        loaded = load_stability(page)
+        if loaded is not None:
+            saved = loaded
+            st.caption(
+                tx(
+                    f"这是默认规格在 {loaded['asof']} 预计算的稳定性地图，样本到 {loaded['sample_end']}。结束日比这天晚不超过 10 天仍用这一份；更早的结束日不会用。对冲或窗口变了、或者刚下载了未复权收盘，点按钮才重算。开平仓阈值不改变这张地图。",
+                    f"This is the default-spec stability map precomputed on {loaded['asof']}, through {loaded['sample_end']}. An end date up to 10 days later still uses it. An earlier end date does not. Recompute after the hedge, the windows, or a new unadjusted close change. Entry and exit thresholds do not change the map.",
+                )
+            )
     if not isinstance(saved, dict):
+        if not fresh_unadjusted:
+            st.caption(tx("还没有和当前样本一致的预计算。点按钮才会重算。", "No precomputed map matches this sample. The button recomputes it."))
         return
     report = saved["report"]
     rate = report["reject_rate"]

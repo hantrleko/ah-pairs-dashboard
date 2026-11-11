@@ -16,8 +16,10 @@ from ah_pairs.freshness import cache_written_at, northbound_stops_before, price_
 from ah_pairs.i18n import set_lang, tx
 from ah_pairs.northbound import latest_valid
 from ah_pairs.notes import parse_notes
+from ah_pairs.plots import core_signal_figure
 from ui.cache import cached_alt_beta, cached_backtest, cached_northbound, cached_pair, cached_signals
-from ui.format import kpis, pct, pval, span_frame, tone
+from ui.format import kpis, num, pct, pval, show_chart, span_frame, tone
+from ui.lab import render_lab_strip
 from ui.sidebar import render_sidebar
 from ui.style import inject_css
 from ui.tabs import (
@@ -25,6 +27,7 @@ from ui.tabs import (
     render_diagnose,
     render_market,
     render_method,
+    render_panorama,
     render_scan,
     render_signal,
     render_stability,
@@ -40,31 +43,30 @@ inject_css()
 LOGO = str(Path(__file__).resolve().parent / "assets" / "eugene-finance-logo.jpg")
 
 with st.sidebar:
-    choice = render_sidebar(LOGO)
+    choice = render_sidebar()
 
-logo_col, title_col = st.columns([1, 5], vertical_alignment="center")
+logo_col, title_col = st.columns([1, 6], vertical_alignment="center")
 with logo_col:
-    st.image(LOGO, width=156)
+    st.image(LOGO, width=108)
 with title_col:
     st.markdown(
         tx(
             """
 <div class="brand">
-  <p class="kicker">V1.4 · EUGENE FINANCE</p>
+  <p class="kicker">V1.5 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H 股协整配对交易研究看板</h1>
-  <p class="subtitle">Interactive Cointegration &amp; Dynamic Pairs Trading Lab · 仅供学习与研究，不构成投资建议</p>
 </div>
             """,
             """
 <div class="brand">
-  <p class="kicker">V1.4 · EUGENE FINANCE</p>
+  <p class="kicker">V1.5 · EUGENE FINANCE</p>
   <h1>EF Lab · A+H cointegration and pairs research</h1>
-  <p class="subtitle">For study and research. Not investment advice.</p>
 </div>
             """,
         ),
         unsafe_allow_html=True,
     )
+render_lab_strip()
 
 params = choice["params"]
 picked = choice["picked"]
@@ -101,7 +103,12 @@ try:
             signal_key,
             north_key,
         )
-        frame_bt, trades, stats, sensitivity = cached_backtest(prepared["frame"], trade_token(params))
+        borrow_token = ""
+        if params.allow_short_a:
+            from ah_pairs.borrow import borrow_token_for
+
+            borrow_token = borrow_token_for(prepared["frame"].index, picked.a_code)
+        frame_bt, trades, stats, sensitivity = cached_backtest(prepared["frame"], trade_token(params), borrow_token)
     result = dict(prepared)
     result.update(frame=frame_bt, trades=trades, stats=stats, sensitivity=sensitivity, params=params)
 except Exception as exc:
@@ -124,48 +131,26 @@ common = frame.loc[frame["both_open"]] if "both_open" in frame.columns else fram
 one_sided = int((~frame["both_open"]).sum()) if "both_open" in frame.columns else 0
 premium_now = common["premium"].dropna() if "premium" in common.columns else frame["premium"].dropna()
 premium_last = float(premium_now.iloc[-1]) if len(premium_now) else np.nan
-price_tag = tx('<span class="tag bad">行情偏旧</span>', '<span class="tag bad">stale prices</span>') if price_stale else tx('<span class="tag">行情及时</span>', '<span class="tag">prices current</span>')
-nb_tag = tx('<span class="tag bad">北向已停止披露</span>', '<span class="tag bad">northbound disclosure ended</span>') if nb_stale else tx('<span class="tag">北向覆盖到行情截止</span>', '<span class="tag">northbound covers the prices</span>')
+price_state = tx("行情偏旧", "stale prices") if price_stale else tx("行情及时", "prices current")
+nb_state = tx("北向已停止披露", "northbound disclosure ended") if nb_stale else tx("北向覆盖到行情截止", "northbound covers the prices")
 st.markdown(
     tx(
         f"""
 <div class="mast">
   <div>
-    <p class="kicker">V1.4 · 这一对</p>
     <p class="pair-name">{picked["name"]}</p>
-    <p class="meta">{picked.a_code} · {picked.h_code} · {len(common)} 个同时开市日，另有 {one_sided} 天只有一边开市。协整不用这些单边日；已有仓位仍计入开市一边的涨跌。</p>
+    <p class="meta">{picked.a_code} · {picked.h_code}</p>
   </div>
   <div class="pill"><span>最近溢价</span><strong>{pct(premium_last)}</strong></div>
-</div>
-<div class="toolbar">
-  <strong>{picked["name"]}</strong>
-  <span>评估 {start_day} — {end_day}</span>
-  <span>A 股 {sources.get("a", "—")} · H 股 {sources.get("h", "—")} · 汇率 {sources.get("fx", "—")}</span>
-  <span>行情 {frame.index.min().date()} — {last_px.date()}</span>
-  {price_tag}
-  <span>北向截至 {nb_text}</span>
-  {nb_tag}
-  <span>缓存写入 {cache_stamp}</span>
 </div>
         """,
         f"""
 <div class="mast">
   <div>
-    <p class="kicker">V1.4 · this pair</p>
     <p class="pair-name">{picked["name"]}</p>
-    <p class="meta">{picked.a_code} · {picked.h_code} · {len(common)} common sessions, plus {one_sided} one-sided days. Cointegration ignores those days; an open position still earns the side that traded.</p>
+    <p class="meta">{picked.a_code} · {picked.h_code}</p>
   </div>
   <div class="pill"><span>Premium</span><strong>{pct(premium_last)}</strong></div>
-</div>
-<div class="toolbar">
-  <strong>{picked["name"]}</strong>
-  <span>{start_day} — {end_day}</span>
-  <span>A {sources.get("a", "—")} · H {sources.get("h", "—")} · FX {sources.get("fx", "—")}</span>
-  <span>Prices {frame.index.min().date()} — {last_px.date()}</span>
-  {price_tag}
-  <span>Northbound through {nb_text}</span>
-  {nb_tag}
-  <span>Cache {cache_stamp}</span>
 </div>
         """,
     ),
@@ -179,23 +164,6 @@ if price_stale:
         ),
         unsafe_allow_html=True,
     )
-if note_meta.get("fx_lag"):
-    lagged = int(note_meta["fx_lag"])
-    st.caption(tx(f"汇率有 {lagged} 天沿用了此前最多 5 个交易日的牌价。", f"The exchange rate was carried forward for {lagged} days, at most five sessions."))
-if "download_common" in note_meta:
-    st.caption(
-        tx(
-            f"含预热的下载区间：同时开市 {note_meta['download_common']} 天，只有一边开市 {note_meta['download_one_sided']} 天。协整和信号只用同时开市日；已有仓位在单边开市日仍计算开市一边的收益，当天不调仓。",
-            f"Download window, including warm-up: {note_meta['download_common']} common sessions and {note_meta['download_one_sided']} one-sided days. Cointegration and signals use common sessions. An open position still earns the side that traded, and that day does not rebalance.",
-        )
-    )
-if note_meta.get("download_failed"):
-    st.caption(tx("有一条行情下载失败，图上用的是本地缓存。", "One download failed, so the chart is using the local cache."))
-if note_meta.get("adjust_mismatch"):
-    st.caption(tx("两条腿的复权来源可能不一致。Yahoo 复权价含分红再投资，东财用前复权，价差水平要谨慎解读。", "The two legs may not use the same adjustment. Yahoo reinvests dividends; East Money uses a forward adjustment. Read the spread level with care."))
-elif not any(str(note).startswith("meta:") for note in notes):
-    for note in parsed["prose"]:
-        st.caption(note)
 if eg["reject_5"]:
     coint_words = tx(f"5% 水平上拒绝无协整（EG p = {pval(eg['pvalue'])}）", f"rejects no-cointegration at 5% (EG p = {pval(eg['pvalue'])})")
     note_class = "note ok"
@@ -223,18 +191,71 @@ st.markdown(
     f'<p class="{note_class}">{coint_words}{tx("；", "; ")}{pay_words}{tx("。", ". ")}{short_words}{tx("", " ")}{tail}</p>',
     unsafe_allow_html=True,
 )
-st.caption(spec_line)
-sharpe_text = f"{stats['sharpe']:.2f}" if np.isfinite(stats["sharpe"]) else "—"
-kpis(
-    [
-        (tx("EG p 值", "EG p-value"), pval(eg["pvalue"]), ""),
-        (tx("净收益", "Net return"), pct(stats["total_return"]), tone(stats["total_return"])),
-        (tx("夏普", "Sharpe"), sharpe_text, tone(stats["sharpe"])),
-        (tx("最大回撤", "Max drawdown"), pct(stats["max_drawdown"]), "neg" if np.isfinite(stats["max_drawdown"]) else ""),
-    ],
-    columns=4,
+engine = choice.get("engine", "v14")
+family_cut = 0.05 / 4
+family_rejects = bool(np.isfinite(eg["pvalue"]) and eg["pvalue"] <= family_cut)
+family_line = tx(
+    f"四只对照一起看时，5% 的 Bonferroni 阈值是 {family_cut:.4f}。{'家族校正后仍拒绝。' if family_rejects else '家族校正后不拒绝。'}这不是获利概率。",
+    f"Across the four preset pairs, the Bonferroni 5% cutoff is {family_cut:.4f}. {'The family still rejects.' if family_rejects else 'The family no longer rejects.'} This is not the probability of profit.",
 )
-st.caption(tx("EG p 值检验的是「没有协整」。净收益是期末净值减 1。半衰期、残差 ADF 和 Johansen 在「协整诊断」。", "The EG p-value tests “no cointegration”. Net return is ending equity minus 1. Half-life, residual ADF and Johansen are under Diagnostics."))
+sharpe_text = f"{stats['sharpe']:.2f}" if np.isfinite(stats["sharpe"]) else "—"
+v15_state = None
+if engine == "v15":
+    from ah_pairs.v15.calendar import read_dividend_calendar
+    from ah_pairs.v15.report import preview, result_key
+
+    v15_key = result_key(picked.a_code, start_day, end_day, params.allow_short_a)
+    v15_state = st.session_state.get(v15_key)
+    try:
+        snap = preview(frame, read_dividend_calendar(picked.a_code, picked.h_code))
+    except Exception as exc:
+        snap = {"z": np.nan, "half_life": np.nan, "half_life_low": np.nan, "half_life_high": np.nan, "wedge_annual": np.nan, "wedge_implausible": False, "gaps": [str(exc)]}
+    oos = (v15_state or {}).get("oos") or {}
+    folds = (v15_state or {}).get("folds")
+    last_rc = float(folds["rc_p"].iloc[-1]) if isinstance(folds, pd.DataFrame) and len(folds) and "rc_p" in folds.columns else np.nan
+    hl_text = num(snap["half_life"], 1)
+    if np.isfinite(snap.get("half_life_low", np.nan)) and np.isfinite(snap.get("half_life_high", np.nan)):
+        hl_text = f"{hl_text} ({num(snap['half_life_low'], 0)}–{num(snap['half_life_high'], 0)})"
+    kpis(
+        [
+            (tx("净溢价 z", "Net-premium z"), num(snap["z"], 2), ""),
+            (tx("OOS 净收益", "OOS net"), pct(oos.get("total_return", np.nan)), tone(oos.get("total_return", np.nan))),
+            (tx("OOS 夏普", "OOS Sharpe"), num(oos.get("sharpe", np.nan), 2), tone(oos.get("sharpe", np.nan))),
+            (tx("OOS 回撤", "OOS drawdown"), pct(oos.get("max_drawdown", np.nan)), "neg" if np.isfinite(oos.get("max_drawdown", np.nan)) else ""),
+            (tx("RC p", "RC p"), pval(last_rc), ""),
+            (tx("半衰期", "Half-life"), hl_text, ""),
+        ],
+        columns=6,
+    )
+    if snap.get("gaps"):
+        st.caption(tx("股息日历还没有覆盖这段样本，净溢价 z 只用复权价，楔子没有算。" + snap["gaps"][0], "No dividend calendar covers this sample, so net-premium z uses adjusted prices and the wedge is not applied. " + snap["gaps"][0]))
+    elif np.isfinite(snap.get("wedge_annual", np.nan)):
+        st.caption(tx(f"Base 情景的税后股息差大约是每年 {snap['wedge_annual']:.2%}。常数部分留在滚动均值里，不会把 z 的均值整段推离 0。", f"The base after-tax dividend gap is about {snap['wedge_annual']:.2%} a year. A constant wedge stays inside the rolling mean, so it does not shift the average z."))
+    if snap.get("wedge_implausible"):
+        st.caption(tx("税后股息差超过每年 5 个对数百分点，这个楔子不要当真。", "The after-tax dividend gap exceeds 5 log percentage points a year. Do not treat that wedge as real."))
+    if v15_state is None:
+        st.caption(tx("样本外净收益、夏普、回撤和 RC p 还没算。回测页的按钮才会跑 V1.5，打开页面不会跑。", "OOS net, Sharpe, drawdown and the RC p-value are not computed yet. The backtest-page button runs V1.5. Opening the page does not."))
+    else:
+        if v15_state.get("folds_insufficient"):
+            st.caption(tx(f"样本外只有 {v15_state.get('n_folds', 0)} 折，不足 4 折。统计结论不可靠。", f"Only {v15_state.get('n_folds', 0)} out-of-sample folds, fewer than 4. The statistical claim is not reliable."))
+        share = v15_state.get("blocked_share")
+        if share is not None and np.isfinite(share):
+            st.caption(tx(f"不允许做空 A 股时，偏贵一侧的信号有 {share:.0%} 被挡住，没有成交。", f"With short A-shares off, {share:.0%} of the rich-A signals were blocked and not traded."))
+        if isinstance(folds, pd.DataFrame) and len(folds):
+            last = folds.iloc[-1]
+            st.caption(tx(f"最近一折的参数来自测试段之前的训练折：开仓 {last['z_in']:g}，平仓 {last['z_out']:g}，估计窗口 {int(last['W_est'])} 日。测试段 {pd.Timestamp(last['test_start']).date()} 至 {pd.Timestamp(last['test_end']).date()}。", f"The latest fold took entry {last['z_in']:g}, exit {last['z_out']:g} and estimation window {int(last['W_est'])} from training that ended before the test. Test window {pd.Timestamp(last['test_start']).date()} to {pd.Timestamp(last['test_end']).date()}."))
+        st.caption(tx("RC p 检验的是「这组参数里最好的那条，样本外均值并不高于 0」。它不是获利概率。", "The RC p-value tests whether the best cell in the grid has an out-of-sample mean above zero. It is not the probability of profit."))
+else:
+    kpis(
+        [
+            (tx("EG p 值", "EG p-value"), pval(eg["pvalue"]), ""),
+            (tx("净收益", "Net return"), pct(stats["total_return"]), tone(stats["total_return"])),
+            (tx("夏普", "Sharpe"), sharpe_text, tone(stats["sharpe"])),
+            (tx("最大回撤", "Max drawdown"), pct(stats["max_drawdown"]), "neg" if np.isfinite(stats["max_drawdown"]) else ""),
+        ],
+        columns=4,
+    )
+    st.caption(tx("现在显示的是 v14 引擎。侧栏可以改到 v15；两套结果分开算。", "These figures are the v14 engine. The sidebar can switch to v15. The two results stay separate."))
 prev = st.session_state.get("pair_snapshot")
 if prev and prev.get("code") != picked.a_code:
     st.caption(tx(f"刚从{prev['name']}换到{picked['name']}：EG p 从 {prev['p']} 变为 {pval(eg['pvalue'])}。p 更小只说明这段样本更接近协整。", f"Switched from {prev['name']} to {picked['name']}: EG p moved from {prev['p']} to {pval(eg['pvalue'])}. A smaller p-value only means this sample is closer to cointegration."))
@@ -304,10 +325,66 @@ page = SimpleNamespace(
     traded_hl=result["half_life_traded"],
     johansen=result["johansen"],
     lang=st.session_state["lang"],
+    engine=engine,
 )
+
+show_chart(
+    core_signal_figure(
+        page.view,
+        page.params.z_window,
+        page.params.entry_z,
+        page.params.exit_z,
+        page.params.stop_z,
+        show_marks=page.show_marks,
+        height=520,
+    ),
+    "chart_core_home",
+)
+with st.expander(tx("数据状态", "Data status"), expanded=False):
+    st.caption(
+        tx(
+            f"{len(common)} 个同时开市日，另有 {one_sided} 天只有一边开市。协整不用这些单边日；已有仓位仍计入开市一边的涨跌。",
+            f"{len(common)} common sessions, plus {one_sided} one-sided days. Cointegration ignores those days; an open position still earns the side that traded.",
+        )
+    )
+    st.caption(
+        tx(
+            f"评估 {start_day} — {end_day}。A 股 {sources.get('a', '—')}，H 股 {sources.get('h', '—')}，汇率 {sources.get('fx', '—')}。行情 {frame.index.min().date()} — {last_px.date()}，{price_state}。北向截至 {nb_text}，{nb_state}。缓存或已发布副本 {cache_stamp}。",
+            f"{start_day} — {end_day}. A {sources.get('a', '—')}, H {sources.get('h', '—')}, FX {sources.get('fx', '—')}. Prices {frame.index.min().date()} — {last_px.date()}, {price_state}. Northbound through {nb_text}, {nb_state}. Cache or published copy {cache_stamp}.",
+        )
+    )
+    if north_error:
+        st.caption(tx(f"北向没有读到：{north_error}", f"Northbound was not read: {north_error}"))
+    if note_meta.get("fx_lag"):
+        lagged = int(note_meta["fx_lag"])
+        st.caption(tx(f"汇率有 {lagged} 天沿用了此前最多 5 个交易日的牌价。", f"The exchange rate was carried forward for {lagged} days, at most five sessions."))
+    if "download_common" in note_meta:
+        st.caption(
+            tx(
+                f"含预热的下载区间：同时开市 {note_meta['download_common']} 天，只有一边开市 {note_meta['download_one_sided']} 天。协整和信号只用同时开市日；已有仓位在单边开市日仍计算开市一边的收益，当天不调仓。",
+                f"Download window, including warm-up: {note_meta['download_common']} common sessions and {note_meta['download_one_sided']} one-sided days. Cointegration and signals use common sessions. An open position still earns the side that traded, and that day does not rebalance.",
+            )
+        )
+    if note_meta.get("download_failed"):
+        st.caption(tx("有一条行情下载失败，图上用的是本地缓存。", "One download failed, so the chart is using the local cache."))
+    if note_meta.get("adjust_mismatch"):
+        st.caption(tx("两条腿的复权来源可能不一致。Yahoo 复权价含分红再投资，东财用前复权，价差水平要谨慎解读。", "The two legs may not use the same adjustment. Yahoo reinvests dividends; East Money uses a forward adjustment. Read the spread level with care."))
+    elif not any(str(note).startswith("meta:") for note in notes):
+        for note in parsed["prose"]:
+            st.caption(note)
+    st.caption(spec_line)
+    st.caption(family_line)
+    st.caption(tx("EG p 值检验的是「没有协整」。净收益是期末净值减 1。半衰期、残差 ADF 和 Johansen 在「协整诊断」。", "The EG p-value tests “no cointegration”. Net return is ending equity minus 1. Half-life, residual ADF and Johansen are under Diagnostics."))
+    st.caption(
+        tx(
+            "行情、分红、北向、南向、AH 溢价指数、离线扫描和今日全景由定时任务写入已发布副本。这里没有本地文件时就读那一份。打开页面不下载。默认规格的 walk-forward、稳定性地图和全景表打开就能看到；结束日更早或参数变了，再点按钮重算。",
+            "The scheduled job writes prices, dividends, northbound, southbound, the AH premium index, the offline scan and today's book into the published copy. The page reads that copy when the local file is missing, and does not download on open. The default-spec walk-forward, stability map and panorama are already there. An earlier end date or a changed specification is recomputed from the button.",
+        )
+    )
 
 tabs = st.tabs(
     [
+        tx("今日全景", "Today"),
         tx("摘要", "Summary"),
         tx("协整诊断", "Diagnostics"),
         tx("信号", "Signal"),
@@ -319,26 +396,28 @@ tabs = st.tabs(
     ]
 )
 with tabs[0]:
-    render_summary(page)
+    render_panorama(page)
 with tabs[1]:
-    render_diagnose(page)
+    render_summary(page)
 with tabs[2]:
-    render_signal(page)
+    render_diagnose(page)
 with tabs[3]:
-    render_stability(page)
+    render_signal(page)
 with tabs[4]:
-    render_backtest(page)
+    render_stability(page)
 with tabs[5]:
-    render_method()
+    render_backtest(page)
 with tabs[6]:
-    render_market(page)
+    render_method()
 with tabs[7]:
+    render_market(page)
+with tabs[8]:
     render_scan(page)
 
 st.markdown(
     tx(
-        '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.4 · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
-        '<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.4 · Research and study only. Not investment advice. A backtest is not a forecast.</p>',
+        f'<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.5 · 引擎 {engine} · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
+        f'<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.5 · engine {engine} · Research and study only. Not investment advice. A backtest is not a forecast.</p>',
     ),
     unsafe_allow_html=True,
 )

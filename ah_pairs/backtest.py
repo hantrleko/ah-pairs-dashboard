@@ -131,6 +131,8 @@ def update_position(
     allow_short_a: bool,
 ) -> int:
     """+1 做多价差（多 A、空 H），-1 做空价差（空 A、多 H），0 空仓。"""
+    if position == -1 and not allow_short_a:
+        return 0
     if not np.isfinite(z):
         return int(position)
     if position == 0:
@@ -167,6 +169,7 @@ def positions_from_z(
     beta: np.ndarray,
     params: StrategyParams,
     tradable: np.ndarray | None = None,
+    short_a_days: np.ndarray | None = None,
 ) -> np.ndarray:
     """每个时点收盘后想持有的方向。还没有推迟到成交日。
 
@@ -180,13 +183,16 @@ def positions_from_z(
         if not can_trade[t]:
             target[t] = held
             continue
+        allow_short = params.allow_short_a
+        if short_a_days is not None:
+            allow_short = bool(allow_short and short_a_days[t])
         held = update_position(
             held,
             float(z[t]),
             params.entry_z,
             params.exit_z,
             params.stop_z,
-            params.allow_short_a,
+            allow_short,
         )
         if params.require_positive_beta and not (
             np.isfinite(beta[t]) and beta[t] > 0
@@ -268,6 +274,7 @@ def _tradable(frame: pd.DataFrame) -> np.ndarray:
 def run_backtest(
     frame: pd.DataFrame,
     params: StrategyParams,
+    short_a_days: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """在已经算好 z 和 beta 的表上回测。
 
@@ -283,7 +290,7 @@ def run_backtest(
     n = len(work)
 
     tradable = _tradable(work)
-    target = positions_from_z(z, beta, params, tradable=tradable)
+    target = positions_from_z(z, beta, params, tradable=tradable, short_a_days=short_a_days)
     direction = _executed_direction(target, params.fill, tradable=tradable)
     for t in range(n):
         if not tradable[t]:

@@ -1,0 +1,30 @@
+{
+  "start": "2018-01-01",
+  "sample_end": "2026-11-10",
+  "params": {
+    "allow_short_a": false,
+    "beta_band": 0.1,
+    "costs": {
+      "a_borrow_annual": 0.05,
+      "a_commission": 0.00025,
+      "a_stamp_sell": 0.0005,
+      "h_borrow_annual": 0.02,
+      "h_commission": 0.0004,
+      "h_stamp": 0.001,
+      "slippage": 0.0,
+      "trading_days": 252,
+      "use_statutory_stamp": true
+    },
+    "entry_z": 2.0,
+    "exit_z": 0.5,
+    "fill": "next_close",
+    "hedge": "rolling",
+    "hedge_window": 120,
+    "kalman_delta": 0.0001,
+    "kalman_delta_auto": true,
+    "require_positive_beta": true,
+    "stop_z": 4.0,
+    "z_window": 60
+  },
+  "skipped": []
+}

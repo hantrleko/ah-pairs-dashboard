@@ -1,0 +1,42 @@
+name: refresh-daily
+
+on:
+  schedule:
+    # 17:30 北京时间，A 股和港股都已收盘。只在工作日跑。
+    - cron: "30 9 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-daily
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements.txt
+      - name: Refresh caches and the default desk
+        id: refresh
+        run: python -m ah_pairs.refresh
+        env:
+          AH_PUBLISH_SCAN: "1"
+      - name: Commit published files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/published data/desk data/scan_snapshot
+          if git diff --staged --quiet; then
+            echo "没有新的缓存"
+          else
+            git commit -m "刷新每日缓存和默认规格预计算"
+            git push
+          fi
