@@ -1,6 +1,6 @@
 {
   "start": "2018-01-01",
-  "sample_end": "2026-11-10",
+  "sample_end": "2026-11-11",
   "params": {
     "allow_short_a": false,
     "beta_band": 0.1,
