@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import os
+from datetime import date
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from ah_pairs.paths import CACHE_DIR, PUBLISHED_DIR
+from ah_pairs.price_quality import sanitize_close_series
 from ah_pairs.store import prefer, same_dir
-from ah_pairs.universe import a_to_yahoo, h_to_yahoo
+from ah_pairs.universe import a_to_yahoo, h_to_yahoo, list_dates_for_codes
 
 HISTORY_START = "2010-01-01"
 
@@ -65,12 +68,26 @@ def _cached_series(path: Path) -> pd.Series:
     return pd.Series(dtype=float)
 
 
-def _cache_covers(series: pd.Series, today: pd.Timestamp | None = None) -> bool:
+def _network_allowed() -> bool:
+    return os.environ.get("AH_ALLOW_NETWORK", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _cache_covers(series: pd.Series, asof: pd.Timestamp | None = None) -> bool:
+    from ah_pairs.eflab_calendar import PRICE_LAG_DAYS, last_completed_session
+
     if series.empty:
         return False
-    today = pd.Timestamp.today().normalize() if today is None else today.normalize()
+    if asof is None:
+        anchor = pd.Timestamp(last_completed_session()).normalize()
+    else:
+        anchor = pd.Timestamp(asof).normalize()
     last = series.index.max()
-    return last >= today - pd.Timedelta(days=5)
+    return last >= anchor - pd.Timedelta(days=PRICE_LAG_DAYS)
 
 
 def _yahoo_close(ticker: str) -> pd.Series:
@@ -143,6 +160,7 @@ def get_close(
     kind: str | None = None,
     code: str | None = None,
     refresh: bool = False,
+    list_date: date | None = None,
 ) -> tuple[pd.Series, str]:
     """返回 (收盘价, 来源)。来源是 cache、published、yahoo 或 eastmoney。"""
     directory = CACHE_DIR if cache_dir is None else cache_dir
@@ -155,6 +173,12 @@ def get_close(
         return cached, "cache"
     if not refresh and _cache_covers(published):
         return published, "published"
+    if not refresh and not _network_allowed():
+        if not cached.empty:
+            return cached, "沿用本地缓存"
+        if not published.empty:
+            return published, "沿用已发布缓存"
+        raise RuntimeError(f"没有可用的 {ticker} 行情，且 AH_ALLOW_NETWORK 已关闭。")
 
     yahoo_error = ""
     try:
@@ -178,8 +202,11 @@ def get_close(
         if not published.empty:
             return published, "行情下载失败，沿用已发布缓存"
         raise RuntimeError(f"下载 {ticker} 失败。{yahoo_error}".strip())
-    _write_series(path, fresh)
-    return fresh, source
+    cleaned, _notes = sanitize_close_series(fresh, list_date=list_date)
+    if cleaned.empty:
+        raise RuntimeError(f"清洗后 {ticker} 没有可用收盘。")
+    _write_series(path, cleaned)
+    return cleaned, source
 
 
 def read_local_close(ticker: str, cache_dir: Path | None = None) -> pd.Series | None:
@@ -279,11 +306,12 @@ def load_pair(
     warnings: list[str] = []
     a_ticker = a_to_yahoo(a_code)
     h_ticker = h_to_yahoo(h_code)
+    a_list, h_list = list_dates_for_codes(a_code, h_code)
     a_px, a_src = get_close(
-        a_ticker, cache_dir, kind="a", code=a_code, refresh=refresh
+        a_ticker, cache_dir, kind="a", code=a_code, refresh=refresh, list_date=a_list
     )
     h_px, h_src = get_close(
-        h_ticker, cache_dir, kind="h", code=h_code, refresh=refresh
+        h_ticker, cache_dir, kind="h", code=h_code, refresh=refresh, list_date=h_list
     )
     fx, fx_src = get_fx(cache_dir, refresh=refresh)
     warnings.append(f"meta:src:a:{a_src}")

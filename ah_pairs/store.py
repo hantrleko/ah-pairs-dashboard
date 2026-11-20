@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 
@@ -43,8 +44,13 @@ def publish_file(src: Path, dest: Path) -> bool:
     if not src.exists() or src.stat().st_size <= 0:
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
+    payload = src.read_bytes()
+    if dest.exists():
+        prior = dest.read_bytes()
+        if hashlib.sha256(prior).digest() == hashlib.sha256(payload).digest():
+            return False
     tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_bytes(src.read_bytes())
+    tmp.write_bytes(payload)
     tmp.replace(dest)
     side = src.with_suffix(".source")
     if side.exists():

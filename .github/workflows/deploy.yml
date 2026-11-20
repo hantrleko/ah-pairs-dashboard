@@ -1,8 +1,6 @@
 name: deploy
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -20,7 +18,7 @@ jobs:
           RAILWAY_ENVIRONMENT_ID: c595b32b-f875-41b3-b7a6-776de904cbd4
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "RAILWAY_TOKEN is not set. Push does not redeploy until the Railway GitHub app is connected or this secret is added."
-            exit 0
+            echo "RAILWAY_TOKEN is not set."
+            exit 1
           fi
-          railway up --detach --service ah-pairs-dashboard --environment production -m "github main"
+          railway up --detach --service ah-pairs-dashboard --environment production -m "manual deploy"

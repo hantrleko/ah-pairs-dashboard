@@ -11,15 +11,17 @@ import os
 import sys
 import traceback
 
+import numpy as np
 import pandas as pd
 
 from ah_pairs.backtest import StrategyParams, run_backtest
 from ah_pairs.costs import CostParams
-from ah_pairs.data import _cache_file, dividend_path, load_h_dividends, load_pair
+from ah_pairs.data import _cache_file, _read_series, _write_series, dividend_path, load_h_dividends, load_pair
+from ah_pairs.price_quality import sanitize_close_series
 from ah_pairs.desk import DESK_A_CODES, default_desk_params, write_result
 from ah_pairs.paths import CACHE_DIR, PUBLISHED_DIR
 from ah_pairs.store import publish_file
-from ah_pairs.universe import a_to_yahoo, h_to_yahoo, liquid_subset, load_universe
+from ah_pairs.universe import a_to_yahoo, h_to_yahoo, liquid_subset, list_dates_for_codes, load_universe
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     universe = _universe(codes)
     if not args.skip_prices:
         wrote = _prices(universe, args.start, args.end, errors) or wrote
+        wrote = _cleanse_published_prices(universe, errors) or wrote
     if not args.skip_dividends:
         wrote = _dividends(universe, errors) or wrote
     if not args.skip_scan:
@@ -94,6 +97,33 @@ def _market(errors: list[str]) -> bool:
         except Exception as exc:
             errors.append(f"{name}: {exc}")
             print(f"{name} 失败：{exc}", flush=True)
+    return wrote
+
+
+def _cleanse_published_prices(universe: pd.DataFrame, errors: list[str]) -> bool:
+    wrote = False
+    pub = PUBLISHED_DIR / "prices"
+    for row in universe.itertuples(index=False):
+        a_list, h_list = list_dates_for_codes(row.a_code, row.h_code, universe)
+        for ticker, list_date in (
+            (a_to_yahoo(row.a_code), a_list),
+            (h_to_yahoo(row.h_code), h_list),
+        ):
+            path = _cache_file(pub, ticker)
+            if not path.exists():
+                continue
+            try:
+                series = _read_series(path)
+                cleaned, notes = sanitize_close_series(series, list_date=list_date)
+                if cleaned.empty:
+                    raise RuntimeError("清洗后序列为空")
+                if not cleaned.index.equals(series.index) or not np.allclose(cleaned.to_numpy(), series.to_numpy()):
+                    _write_series(path, cleaned)
+                    wrote = True
+                if notes:
+                    print(f"清洗 {ticker}：" + "；".join(notes), flush=True)
+            except Exception as exc:
+                errors.append(f"清洗 {ticker}: {exc}")
     return wrote
 
 

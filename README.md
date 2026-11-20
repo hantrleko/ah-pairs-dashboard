@@ -7,10 +7,12 @@ A 股和 H 股不能互相兑换。这里的结果是统计套利的历史回测
 ## 运行
 
 ```bash
-cd F:\Hermes\Github\ah-pairs-dashboard
+cd ah-pairs-dashboard
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+公开部署建议在 Railway 上设置 `AH_SUBSCRIPTIONS_READONLY=1`（订阅只读）和 `AH_ALLOW_NETWORK=0`（打开页面不下载行情）。每日刷新任务若要推送后自动部署，需要仓库 Secret `REPO_PAT`（推送触发 CI）以及 `RAILWAY_TOKEN`（`refresh-daily` 会直接 `railway up`）。
 
 命令行看一只股票。默认不允许做空 A 股；需要那一档时加上 `--allow-short-a`。
 

@@ -83,21 +83,30 @@ def monthly_cheap_book(
     costs = costs or CostParams()
     if len(panels) < min_names:
         return {"ok": False, "message": f"本地有行情的股票只有 {len(panels)} 只，不足 {min_names} 只。"}
-    z_columns = {}
-    ret_a = {}
-    ret_h = {}
+    z_columns: dict[str, pd.Series] = {}
+    ret_a: dict[str, pd.Series] = {}
+    ret_h: dict[str, pd.Series] = {}
+    master_index: pd.DatetimeIndex | None = None
     for code, prices in panels.items():
         premium = prices["premium"]
         if "both_open" in prices.columns:
             premium = premium.where(prices["both_open"])
         # 单边开市日不放进滚动窗口，否则每隔几周的缺口会把 z 整段打成空值。
         usable = premium.dropna()
-        z_columns[code] = pd.Series(rolling_zscore(usable, int(z_window)), index=usable.index)
+        z_on_common = pd.Series(rolling_zscore(usable, int(z_window)), index=usable.index)
+        z_all = pd.Series(index=prices.index, dtype=float)
+        z_all.loc[z_on_common.index] = z_on_common.to_numpy()
+        z_columns[code] = z_all
         ret_a[code] = prices["ret_a"]
         ret_h[code] = prices["ret_h"]
-    z_frame = pd.DataFrame(z_columns).sort_index()
-    a_frame = pd.DataFrame(ret_a).reindex(z_frame.index)
-    h_frame = pd.DataFrame(ret_h).reindex(z_frame.index)
+        union = pd.DatetimeIndex(prices.index)
+        master_index = union if master_index is None else master_index.union(union)
+    if master_index is None or len(master_index) == 0:
+        return {"ok": False, "message": "没有可用的行情日历。"}
+    master_index = master_index.sort_values()
+    z_frame = pd.DataFrame(z_columns).reindex(master_index).sort_index()
+    a_frame = pd.DataFrame(ret_a).reindex(master_index)
+    h_frame = pd.DataFrame(ret_h).reindex(master_index)
     codes = list(z_frame.columns)
     picks: dict[pd.Timestamp, list[str]] = {}
     for _period, block in z_frame.groupby(z_frame.index.to_period("M")):

@@ -10,6 +10,10 @@ import pandas as pd
 import pytest
 
 from ah_pairs.desk import default_desk_params, load_stability, load_walk, write_result
+from ah_pairs.paths import PUBLISHED_DIR
+from ah_pairs.price_quality import MAX_ABS_DAILY_MOVE, scan_large_moves
+from ah_pairs.universe import a_to_yahoo, h_to_yahoo, liquid_subset, load_universe
+from ah_pairs.data import read_local_close
 
 
 def test_default_desk_matches_the_sidebar_first_open():
@@ -170,6 +174,19 @@ def test_desk_snapshot_follows_the_default_spec(tmp_path):
     assert load_walk(_page(date(2026, 11, 10), a_code="601398"), desk_dir=tmp_path) is not None
     assert load_walk(_page(date(2026, 11, 12), a_code="601398"), desk_dir=tmp_path) is None
     assert load_walk(_page(date(2026, 10, 31), a_code="601398"), desk_dir=tmp_path) is None
+
+
+@pytest.mark.skipif(not (PUBLISHED_DIR / "prices").is_dir(), reason="no published price directory")
+def test_published_prices_have_no_absurd_single_day_moves():
+    hits: list[tuple[str, object, float]] = []
+    for row in liquid_subset(load_universe()).itertuples(index=False):
+        for ticker in (a_to_yahoo(row.a_code), h_to_yahoo(row.h_code)):
+            series = read_local_close(ticker)
+            if series is None or len(series) < 2:
+                continue
+            for day, move in scan_large_moves(series, MAX_ABS_DAILY_MOVE):
+                hits.append((ticker, day, move))
+    assert hits == []
 
 
 def test_refresh_with_everything_skipped_does_not_download():

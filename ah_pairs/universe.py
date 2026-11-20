@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 
 from ah_pairs.paths import UNIVERSE_PATH
+from ah_pairs.price_quality import parse_list_date
+
+# 名单里还没写上市日时，流动性子集用这里的 H 股上市日。格式 YYYY-MM-DD。
+H_LIST_FALLBACK: dict[str, str] = {
+    "00300": "2024-09-17",  # 美的集团 H，Yahoo 会混入上市前的伪价格
+}
 
 # 成交通常较活跃、便于第一轮扫描的 A 股代码。名单里不存在的代码会在运行时丢掉。
 LIQUID_A_CODES: tuple[str, ...] = (
@@ -73,8 +81,36 @@ def _normalize_universe(raw: pd.DataFrame) -> pd.DataFrame:
     out["a_yahoo"] = out["a_code"].map(a_to_yahoo)
     out["h_yahoo"] = out["h_code"].map(h_to_yahoo)
     out = out.dropna(subset=["name", "a_code", "h_code"])
+    for col in ("a_list_date", "h_list_date"):
+        if col in out.columns:
+            out[col] = out[col].map(lambda raw: parse_list_date(raw))
+        else:
+            out[col] = pd.Series([None] * len(out), dtype="object")
     out = out.drop_duplicates("a_code").sort_values(["name", "a_code"])
     return out.reset_index(drop=True)
+
+
+def list_dates_for_codes(
+    a_code: str,
+    h_code: str,
+    universe: pd.DataFrame | None = None,
+) -> tuple[date | None, date | None]:
+    """从股票池读 A/H 上市日。缺省用 H_LIST_FALLBACK。"""
+    a = str(a_code).zfill(6)
+    h = str(h_code).zfill(5)
+    frame = universe if universe is not None else load_universe()
+    hit = frame.loc[frame["a_code"] == a]
+    a_list = None
+    h_list = None
+    if not hit.empty:
+        row = hit.iloc[0]
+        a_list = row.get("a_list_date")
+        h_list = row.get("h_list_date")
+        a_list = a_list if isinstance(a_list, date) else parse_list_date(a_list)
+        h_list = h_list if isinstance(h_list, date) else parse_list_date(h_list)
+    if h_list is None and h in H_LIST_FALLBACK:
+        h_list = parse_list_date(H_LIST_FALLBACK[h])
+    return a_list, h_list
 
 
 def load_universe(path=UNIVERSE_PATH) -> pd.DataFrame:
@@ -98,11 +134,25 @@ def refresh_universe(path=UNIVERSE_PATH) -> pd.DataFrame:
             "snapshot_date": snapshot_date,
         }
     )
+    old_dates = None
+    if path.exists():
+        prior = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
+        cols = [col for col in ("a_list_date", "h_list_date") if col in prior.columns]
+        if cols:
+            prior["a_code"] = prior["a_code"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(6)
+            old_dates = prior[["a_code", *cols]]
     frame = _normalize_universe(frame)
+    if old_dates is not None:
+        frame = frame.drop(columns=["a_list_date", "h_list_date"], errors="ignore").merge(
+            old_dates, on="a_code", how="left"
+        )
+        frame = _normalize_universe(frame)
     path.parent.mkdir(parents=True, exist_ok=True)
-    frame.drop(columns=["a_yahoo", "h_yahoo"]).to_csv(
-        path, index=False, encoding="utf-8-sig"
-    )
+    export = frame.drop(columns=["a_yahoo", "h_yahoo"], errors="ignore")
+    for col in ("a_list_date", "h_list_date"):
+        if col in export.columns:
+            export[col] = export[col].apply(lambda raw: raw.isoformat() if isinstance(raw, date) else ("" if raw is None or pd.isna(raw) else raw))
+    export.to_csv(path, index=False, encoding="utf-8-sig")
     return frame
 
 

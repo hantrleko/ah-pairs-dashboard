@@ -117,6 +117,15 @@ def test_snapshot_hides_an_earlier_end_and_a_different_spec(tmp_path, monkeypatc
     assert not is_default_spec(replace(default_desk_params(), entry_z=2.5), date(2018, 1, 1))
 
 
+def test_subscriptions_mutations_flag(monkeypatch):
+    from ah_pairs.subscriptions import subscriptions_mutations_allowed
+
+    monkeypatch.delenv("AH_SUBSCRIPTIONS_READONLY", raising=False)
+    assert subscriptions_mutations_allowed() is True
+    monkeypatch.setenv("AH_SUBSCRIPTIONS_READONLY", "1")
+    assert subscriptions_mutations_allowed() is False
+
+
 def test_email_is_saved_but_not_sent_without_smtp(tmp_path, monkeypatch):
     monkeypatch.delenv("ALERT_SMTP_HOST", raising=False)
     monkeypatch.delenv("ALERT_SMTP_FROM", raising=False)

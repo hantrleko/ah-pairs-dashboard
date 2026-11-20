@@ -83,7 +83,9 @@ def render_signal(page) -> None:
         text = json.dumps(payload, ensure_ascii=False, indent=2)
         st.code(text, language="json")
         url = os.environ.get("ALERT_WEBHOOK_URL", "").strip()
-        if url and st.button(tx("发送这条提醒", "Send this alert"), key="send_alert"):
+        from ah_pairs.subscriptions import subscriptions_mutations_allowed
+
+        if url and subscriptions_mutations_allowed() and st.button(tx("发送这条提醒", "Send this alert"), key="send_alert"):
             ok, note = send_webhook(url, payload)
             st.write(note if ok else tx(f"没有发出去：{note}", f"Not sent: {note}"))
         elif not url:
@@ -93,7 +95,14 @@ def render_signal(page) -> None:
 
 def _subscribe_block(page) -> None:
     from ah_pairs.desk import DESK_A_CODES
-    from ah_pairs.subscriptions import add_subscription, load_subscriptions, mask_target, remove_subscription, smtp_configured
+    from ah_pairs.subscriptions import (
+        add_subscription,
+        load_subscriptions,
+        mask_target,
+        remove_subscription,
+        smtp_configured,
+        subscriptions_mutations_allowed,
+    )
 
     st.markdown(tx("**订阅**", "**Subscription**"))
     st.caption(
@@ -108,6 +117,21 @@ def _subscribe_block(page) -> None:
         st.caption(tx("还没有发信服务器，保存后的邮件不会发出。", "No mail server is configured, so a saved address is not emailed."))
     if os.environ.get("ALERT_WEBHOOK_URL", "").strip():
         st.caption(tx("环境变量里另有一个 webhook，定时任务也会发到那里。地址不在这里显示。", "ALERT_WEBHOOK_URL is also set, so the scheduled job posts there. The address is not shown here."))
+    if not subscriptions_mutations_allowed():
+        st.caption(
+            tx(
+                "线上站点只读：不能在这里保存或删除订阅，也不能手动发送。请用环境变量 AH_SUBSCRIPTIONS_JSON 维护订阅。",
+                "This deployment is read-only: saving, removing, and manual send are disabled. Maintain subscriptions in AH_SUBSCRIPTIONS_JSON.",
+            )
+        )
+        env_items = [item for item in load_subscriptions() if item.get("stored") == "env"]
+        if env_items:
+            st.caption(tx("环境变量里的订阅：", "Env subscriptions:"))
+            for item in env_items:
+                label = tx("邮件", "Email") if item.get("kind") == "email" else "webhook"
+                codes = tx("流动性子集", "Liquid subset") if item.get("codes") == ["*"] else "、".join(item.get("codes") or [])
+                st.caption(f"{label} {mask_target(item.get('kind', ''), item.get('target', ''))} · {codes} · |z|≥{float(item.get('entry_z') or 0):.1f}")
+        return
     with st.form("subscribe_form"):
         kind = st.radio(
             tx("方式", "Channel"),

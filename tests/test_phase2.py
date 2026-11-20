@@ -156,6 +156,31 @@ def test_one_sided_days_do_not_wipe_the_premium_z():
     assert "600007" in result["latest_book"]
 
 
+def test_monthly_cheap_book_uses_the_full_session_calendar_for_pnl():
+    idx = _dates(40, "2020-01-02")
+    extra = pd.bdate_range(idx[0] - pd.Timedelta(days=7), idx[0] - pd.Timedelta(days=1))
+    full_idx = extra.union(idx).sort_values()
+    panels = {}
+    for i in range(8):
+        code = f"{600000 + i:06d}"
+        premium = np.linspace(0.30, 0.05 if i == 7 else 0.40, len(idx))
+        both = np.array([False] * len(extra) + [True] * len(idx))
+        ret_h = np.zeros(len(full_idx))
+        ret_h[: len(extra)] = 0.01
+        panels[code] = pd.DataFrame(
+            {
+                "premium": np.concatenate([np.full(len(extra), np.nan), premium]),
+                "ret_a": np.zeros(len(full_idx)),
+                "ret_h": ret_h,
+                "both_open": both,
+            },
+            index=full_idx,
+        )
+    result = monthly_cheap_book(panels, z_window=10, costs=CostParams(), min_names=4)
+    assert result["ok"] is True
+    assert result["n_days"] == len(full_idx)
+
+
 def test_month_end_uses_the_last_day_with_enough_names():
     idx = _dates(45, "2020-01-02")
     extra = idx.append(pd.DatetimeIndex([idx[-1] + pd.offsets.BDay(1)]))

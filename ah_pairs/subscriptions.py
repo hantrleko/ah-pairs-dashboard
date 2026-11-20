@@ -95,6 +95,16 @@ def smtp_configured() -> bool:
     return bool(host and sender)
 
 
+def subscriptions_mutations_allowed() -> bool:
+    """公开部署时关掉页面上保存、删除和手动发送。"""
+    return os.environ.get("AH_SUBSCRIPTIONS_READONLY", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def deliver(
     payloads: list[dict],
     cache_dir: Path | None = None,
