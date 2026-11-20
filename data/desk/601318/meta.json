@@ -1,9 +1,9 @@
 {
   "a_code": "601318",
   "start": "2018-01-01",
-  "end": "2026-11-19",
-  "asof": "2026-11-19",
-  "sample_end": "2026-11-18",
+  "end": "2026-11-20",
+  "asof": "2026-11-20",
+  "sample_end": "2026-11-19",
   "include_costs": true,
   "params": {
     "hedge": "rolling",
@@ -56,11 +56,11 @@
     ],
     "n_folds": 8,
     "n_trials": 192,
-    "valid_sharpe_median": 0.09936622108599684,
-    "valid_sharpe_min": -0.5111064109204554,
-    "valid_sharpe_max": 0.655655036396372,
+    "valid_sharpe_median": 0.09935670612135224,
+    "valid_sharpe_min": -0.5111007832234702,
+    "valid_sharpe_max": 0.6556495350535517,
     "train_end": "2018-12-31",
     "valid_start": "2026-01-02",
-    "valid_end": "2026-11-18"
+    "valid_end": "2026-11-19"
   }
 }
