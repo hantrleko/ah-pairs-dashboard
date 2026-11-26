@@ -413,6 +413,8 @@ def render_backtest(page) -> None:
         show[tx("开仓", "Entry")] = pd.to_datetime(show["entry_date"]).dt.date
         show[tx("平仓", "Exit")] = pd.to_datetime(show["exit_date"]).dt.date
         show_table(show.rename(columns={"entry_z": "z0", "exit_z": "z1", "holding_days": tx("持有", "Days"), "trade_return": tx("收益", "Return")})[[tx("开仓", "Entry"), tx("平仓", "Exit"), tx("方向", "Side"), "z0", "z1", tx("持有", "Days"), tx("收益", "Return"), tx("状态", "Status")]])
+    if not trades.empty and page.engine == "v14":
+        _attribution_panel(page, trades)
     summary = metrics_table(page.result, page.picked["name"], page.picked.a_code, page.picked.h_code)
     d1, d2, d3 = st.columns(3)
     d1.download_button(tx("指标 CSV", "Metrics CSV"), summary.to_csv(index=False).encode("utf-8-sig"), file_name=f"{page.picked.a_code}_metrics.csv", mime="text/csv")
@@ -424,3 +426,60 @@ def render_backtest(page) -> None:
         mime="text/csv",
     )
     _bundle_downloads(page, wf.get("table") if wf.get("ok") else None)
+
+def _attribution_panel(page, trades) -> None:
+    """逐笔收益拆解。各项加总等于该笔净收益；H 腿人民币收益里汇率不重复算。"""
+    from ah_pairs.attribution import attribute_frame, attribute_window, reconcile_daily
+
+    frame = page.result["frame"]
+    needed = {"w_a", "w_h", "ret_a", "h_hkd", "fx", "cost", "equity", "ret_strat"}
+    if not needed.issubset(set(frame.columns)):
+        return
+    attr = attribute_frame(frame)
+    with st.expander(tx("逐笔收益拆解", "Per-trade attribution")):
+        st.caption(
+            tx(
+                "把每笔收益拆成 A 股价格、H 股本币价格、汇率、交易费和借券费五块。每日各项加总等于引擎净收益，逐笔各项加总等于该笔净收益；汇率贡献含交叉项，不会在 H 股人民币收益里重复计算。",
+                "Each trade is split into A-share price, H-share local price, FX, transaction fees, and borrow cost. The daily parts sum to the engine net return and the per-trade parts sum to the trade net return; FX carries the cross term and is never double counted.",
+            )
+        )
+        if not reconcile_daily(attr):
+            st.warning(tx("每日归因与引擎净收益对不上，下面数字不可信。", "Daily attribution does not reconcile with the engine; the numbers below are unreliable."))
+        labels = []
+        for i, tr in trades.iterrows():
+            side = tx("做多价差", "Long") if int(tr["direction"]) == 1 else tx("做空价差", "Short")
+            end = pd.to_datetime(tr["exit_date"]).date() if bool(tr["closed"]) else tx("持仓中", "open")
+            labels.append(f"{pd.to_datetime(tr['entry_date']).date()} → {end} · {side} · {pct(tr['trade_return'])}")
+        pick = st.selectbox(tx("选择一笔交易", "Pick a trade"), range(len(labels)), format_func=lambda i: labels[i], key="attr_pick")
+        tr = trades.iloc[int(pick)]
+        end_date = tr["exit_date"] if bool(tr["closed"]) else frame.index.max()
+        out = attribute_window(attr, tr["entry_date"], end_date)
+        if not out.get("ok"):
+            st.info(tx(f"不可归因：{out.get('reason')}", f"Not attributable: {out.get('reason')}"))
+            return
+        rows = pd.DataFrame(
+            {
+                tx("来源", "Source"): [
+                    tx("A 股价格", "A price"),
+                    tx("H 股本币价格", "H local price"),
+                    tx("汇率", "FX"),
+                    tx("交易费用", "Fees"),
+                    tx("借券费用", "Borrow"),
+                    tx("合计", "Total"),
+                ],
+                tx("贡献", "Contribution"): [
+                    pct(out["a_price"]),
+                    pct(out["h_price"]),
+                    pct(out["fx"]),
+                    pct(out["cost"]),
+                    pct(out["borrow"]),
+                    pct(out["total"]),
+                ],
+            }
+        )
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+        note = tx("对账一致：合计等于该笔复合净收益。", "Reconciled: the parts sum to the compounded trade return.") if out.get("reconciled") else tx("对账不一致，合计与复合净收益有差异。", "Not reconciled: the parts differ from the compounded return.")
+        if not bool(tr["closed"]):
+            note += tx(" 未平仓部分是浮动盈亏。", " The open part is unrealized.")
+        st.caption(note)
+

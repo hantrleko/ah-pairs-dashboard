@@ -23,15 +23,10 @@ from ui.lab import render_lab_strip
 from ui.sidebar import render_sidebar
 from ui.style import inject_css
 from ui.tabs import (
-    render_backtest,
-    render_diagnose,
-    render_market,
+    render_forward,
     render_method,
-    render_panorama,
-    render_scan,
-    render_signal,
-    render_stability,
-    render_summary,
+    render_research,
+    render_today,
 )
 
 st.set_page_config(page_title="EF Lab | A+H", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
@@ -218,7 +213,7 @@ if engine == "v15":
         hl_text = f"{hl_text} ({num(snap['half_life_low'], 0)}–{num(snap['half_life_high'], 0)})"
     kpis(
         [
-            (tx("净溢价 z", "Net-premium z"), num(snap["z"], 2), ""),
+            (tx("复权溢价 z", "Premium z"), num(snap["z"], 2), ""),
             (tx("OOS 净收益", "OOS net"), pct(oos.get("total_return", np.nan)), tone(oos.get("total_return", np.nan))),
             (tx("OOS 夏普", "OOS Sharpe"), num(oos.get("sharpe", np.nan), 2), tone(oos.get("sharpe", np.nan))),
             (tx("OOS 回撤", "OOS drawdown"), pct(oos.get("max_drawdown", np.nan)), "neg" if np.isfinite(oos.get("max_drawdown", np.nan)) else ""),
@@ -228,9 +223,9 @@ if engine == "v15":
         columns=6,
     )
     if snap.get("gaps"):
-        st.caption(tx("股息日历还没有覆盖这段样本，净溢价 z 只用复权价，楔子没有算。" + snap["gaps"][0], "No dividend calendar covers this sample, so net-premium z uses adjusted prices and the wedge is not applied. " + snap["gaps"][0]))
+        st.caption(tx("股息日历还没有覆盖这段样本。z 本来就只来自复权价溢价；税后股息差连参考值也算不出。" + snap["gaps"][0], "No dividend calendar covers this sample. The z comes from adjusted prices anyway; even the reference after-tax wedge cannot be computed. " + snap["gaps"][0]))
     elif np.isfinite(snap.get("wedge_annual", np.nan)):
-        st.caption(tx(f"Base 情景的税后股息差大约是每年 {snap['wedge_annual']:.2%}。常数部分留在滚动均值里，不会把 z 的均值整段推离 0。", f"The base after-tax dividend gap is about {snap['wedge_annual']:.2%} a year. A constant wedge stays inside the rolling mean, so it does not shift the average z."))
+        st.caption(tx(f"参考值：Base 情景的税后股息差大约是每年 {snap['wedge_annual']:.2%}。它目前不进入信号，z 完全来自复权价溢价。", f"For reference, the base after-tax dividend gap is about {snap['wedge_annual']:.2%} a year. It does not enter the signal; the z comes entirely from the adjusted-price premium."))
     if snap.get("wedge_implausible"):
         st.caption(tx("税后股息差超过每年 5 个对数百分点，这个楔子不要当真。", "The after-tax dividend gap exceeds 5 log percentage points a year. Do not treat that wedge as real."))
     if v15_state is None:
@@ -384,35 +379,20 @@ with st.expander(tx("数据状态", "Data status"), expanded=False):
 
 tabs = st.tabs(
     [
-        tx("今日全景", "Today"),
-        tx("摘要", "Summary"),
-        tx("协整诊断", "Diagnostics"),
-        tx("信号", "Signal"),
-        tx("稳定性", "Stability"),
-        tx("回测", "Backtest"),
+        tx("今日工作台", "Today"),
+        tx("单对研究", "Pair research"),
+        tx("前瞻记录", "Forward record"),
         tx("方法", "Method"),
-        tx("市场对照", "Market"),
-        tx("一组对照", "Pairs"),
     ]
 )
 with tabs[0]:
-    render_panorama(page)
+    render_today(page)
 with tabs[1]:
-    render_summary(page)
+    render_research(page)
 with tabs[2]:
-    render_diagnose(page)
+    render_forward(page)
 with tabs[3]:
-    render_signal(page)
-with tabs[4]:
-    render_stability(page)
-with tabs[5]:
-    render_backtest(page)
-with tabs[6]:
     render_method()
-with tabs[7]:
-    render_market(page)
-with tabs[8]:
-    render_scan(page)
 
 st.markdown(
     tx(

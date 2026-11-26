@@ -17,6 +17,10 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    outputs:
+      committed: ${{ steps.commit.outputs.committed }}
+      sha: ${{ steps.commit.outputs.sha }}
+      pat: ${{ steps.commit.outputs.pat }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,6 +34,7 @@ jobs:
         env:
           AH_PUBLISH_SCAN: "1"
       - name: Commit published files
+        id: commit
         env:
           REPO_PAT: ${{ secrets.REPO_PAT }}
         run: |
@@ -39,22 +44,25 @@ jobs:
             git remote set-url origin "https://x-access-token:${REPO_PAT}@github.com/${GITHUB_REPOSITORY}"
           fi
           git add data/published data/desk data/scan_snapshot
+          if [ -n "$REPO_PAT" ]; then
+            echo "pat=true" >> "$GITHUB_OUTPUT"
+          fi
           if git diff --staged --quiet; then
             echo "没有新的缓存"
+            echo "committed=false" >> "$GITHUB_OUTPUT"
           else
             git commit -m "刷新每日缓存和默认规格预计算"
             git push
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           fi
-      - name: Deploy to Railway
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_PROJECT_ID: f6c575bf-a8da-48eb-b1ac-2e0089a9daa1
-          RAILWAY_SERVICE_ID: 38f45f68-a92f-4488-9359-142ed6f26400
-          RAILWAY_ENVIRONMENT_ID: c595b32b-f875-41b3-b7a6-776de904cbd4
-        run: |
-          if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "RAILWAY_TOKEN is not set; skip deploy."
-            exit 0
-          fi
-          npm install -g @railway/cli
-          railway up --detach --service ah-pairs-dashboard --environment production -m "refresh-daily"
+
+  release:
+    needs: refresh
+    # 配置 REPO_PAT 时推送会触发 CI，由 CI 走统一发布；没有 PAT 时推送不触发 CI，这里直接发布同一提交。
+    if: needs.refresh.outputs.committed == 'true' && needs.refresh.outputs.pat != 'true'
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
+    with:
+      sha: ${{ needs.refresh.outputs.sha }}
+      reason: "refresh-daily"

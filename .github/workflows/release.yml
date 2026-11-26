@@ -1,0 +1,65 @@
+name: release
+
+# 唯一的生产发布入口。定时刷新、CI 和手动部署都调这里：
+# 按确切提交 SHA 检出，railway up，再探活。各调用方串行，不并行重复部署。
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        required: true
+        type: string
+      reason:
+        required: false
+        type: string
+        default: "release"
+
+jobs:
+  railway:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: railway-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+      - name: Verify the checkout matches the requested commit
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.sha }}"
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: f6c575bf-a8da-48eb-b1ac-2e0089a9daa1
+          RAILWAY_SERVICE_ID: 38f45f68-a92f-4488-9359-142ed6f26400
+          RAILWAY_ENVIRONMENT_ID: c595b32b-f875-41b3-b7a6-776de904cbd4
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "RAILWAY_TOKEN is not set; skip deploy."
+            exit 0
+          fi
+          railway up --detach --service ah-pairs-dashboard --environment production -m "${{ inputs.reason }} ${{ inputs.sha }}"
+      - name: Probe the deployment
+        env:
+          AH_APP_URL: ${{ vars.AH_APP_URL }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "No deploy happened; skip probe."
+            exit 0
+          fi
+          if [ -z "$AH_APP_URL" ]; then
+            echo "AH_APP_URL 未配置为仓库变量，跳过探活。配置后这里会轮询 /_stcore/health。"
+            exit 0
+          fi
+          for i in $(seq 1 36); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$AH_APP_URL/_stcore/health" || true)
+            if [ "$code" = "200" ]; then
+              echo "探活通过：$AH_APP_URL"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "探活超时：部署已提交但 6 分钟内健康检查未通过。"
+          exit 1

@@ -10,3 +10,6 @@ data/dividends/*.parquet
 output/
 .DS_Store
 node_modules/
+# 正式启账前忽略本地前瞻账本，防止演练或测试写入被误提交。
+# 正式启用时（refresh 传入 --enable-forward-write 的同一次变更）删除这两行。
+data/published/forward/
