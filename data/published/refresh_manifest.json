@@ -1,0 +1,421 @@
+{
+  "generated_at_utc": "2026-11-26T19:15:47.448607+00:00",
+  "generated_at_beijing": "2026-11-27T03:15:47.448607+08:00",
+  "status": "partial",
+  "items": [
+    {
+      "name": "northbound.parquet",
+      "kind": "aux",
+      "status": "updated",
+      "data_end": "2024-08-16",
+      "rows": 2798,
+      "source": "",
+      "detail": ""
+    },
+    {
+      "name": "southbound.parquet",
+      "kind": "aux",
+      "status": "updated",
+      "data_end": "2026-11-26",
+      "rows": 2759,
+      "source": "",
+      "detail": ""
+    },
+    {
+      "name": "hsahp.parquet",
+      "kind": "aux",
+      "status": "failed",
+      "data_end": null,
+      "rows": null,
+      "source": "",
+      "detail": "沿用截至 2026-11-17 的缓存。更新失败：没有下载到恒生 AH 溢价指数。sina: 'date'; ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    },
+    {
+      "name": "HKDCNY=X",
+      "kind": "core",
+      "status": "updated",
+      "data_end": "2026-11-26",
+      "rows": 4402,
+      "source": "yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601398",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601939",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601288",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601988",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 600036",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601328",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601318",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601628",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601601",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601336",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601857",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 600028",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601088",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 600938",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 600941",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601728",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601899",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 002594",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 000333",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 600585",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601919",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 600030",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601888",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601633",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 000063",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601600",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 600362",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601186",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601390",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 601766",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 000002",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 600600",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "prices 300750",
+      "kind": "core",
+      "status": "updated",
+      "data_end": null,
+      "rows": null,
+      "source": "a:yahoo;h:yahoo",
+      "detail": ""
+    },
+    {
+      "name": "dividends",
+      "kind": "aux",
+      "status": "updated",
+      "data_end": null,
+      "rows": 33,
+      "source": "",
+      "detail": ""
+    },
+    {
+      "name": "scan",
+      "kind": "aux",
+      "status": "updated",
+      "data_end": null,
+      "rows": 33,
+      "source": "",
+      "detail": ""
+    },
+    {
+      "name": "desk 601318",
+      "kind": "aux",
+      "status": "updated",
+      "data_end": "2026-11-25",
+      "rows": null,
+      "source": "",
+      "detail": ""
+    },
+    {
+      "name": "desk 601398",
+      "kind": "aux",
+      "status": "updated",
+      "data_end": "2026-11-25",
+      "rows": null,
+      "source": "",
+      "detail": ""
+    },
+    {
+      "name": "desk 600036",
+      "kind": "aux",
+      "status": "updated",
+      "data_end": "2026-11-25",
+      "rows": null,
+      "source": "",
+      "detail": ""
+    },
+    {
+      "name": "desk 601857",
+      "kind": "aux",
+      "status": "updated",
+      "data_end": "2026-11-25",
+      "rows": null,
+      "source": "",
+      "detail": ""
+    },
+    {
+      "name": "borrow",
+      "kind": "aux",
+      "status": "updated",
+      "data_end": "2026-11-26",
+      "rows": 4133,
+      "source": "",
+      "detail": ""
+    },
+    {
+      "name": "panorama",
+      "kind": "aux",
+      "status": "updated",
+      "data_end": null,
+      "rows": 33,
+      "source": "",
+      "detail": ""
+    },
+    {
+      "name": "forward",
+      "kind": "aux",
+      "status": "skipped",
+      "data_end": null,
+      "rows": null,
+      "source": "",
+      "detail": "未启用：正式启账前不写前瞻账本"
+    }
+  ]
+}
