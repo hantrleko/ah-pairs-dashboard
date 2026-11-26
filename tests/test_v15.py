@@ -25,7 +25,7 @@ from ah_pairs.v15.net_premium import (
     wedge_annual,
     wedge_is_implausible,
 )
-from ah_pairs.v15.walkforward import choose_for_test_start, flag_implausible, reality_check
+from ah_pairs.v15.walkforward import choose_for_test_start, flag_implausible, reality_check, sharpe_interval, walk_forward
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "dividend_calendar.csv"
 
@@ -210,6 +210,76 @@ def test_dividend_calendar_fixture_drops_bad_rows_and_records_a_gap():
     assert tau_a_for_holding_days(30) == 0.20
     assert tau_a_for_holding_days(31) == 0.10
     assert tau_a_for_holding_days(366) == 0.0
+
+
+def test_walk_forward_accounts_on_the_union_calendar():
+    rng = np.random.default_rng(12)
+    n = 130
+    dates = pd.bdate_range("2020-01-01", periods=n)
+    a = 10.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, size=n)))
+    h = 8.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, size=n)))
+    fx = np.full(n, 0.9)
+    both = np.ones(n, dtype=bool)
+    # 样本后段撒几个单边开市日。step 等于 test 时折是连续铺开的，总会落进某一折的测试窗。
+    both[[70, 90, 110]] = False
+    frame = _frame(dates, a, h, fx, both)
+    result = walk_forward(
+        frame,
+        train=30,
+        test=15,
+        step=15,
+        embargo=5,
+        inner_train=15,
+        inner_valid=10,
+        z_window=10,
+        min_trades=0,
+        n_boot=10,
+        seed=3,
+    )
+    oos = pd.DatetimeIndex(result["oos_index"])
+    assert len(oos) > 0
+    one_sided = frame.index[~frame["both_open"]]
+    in_scope = one_sided[(one_sided >= oos.min()) & (one_sided <= oos.max())]
+    assert len(in_scope) > 0
+    assert any(day in oos for day in in_scope)
+    # 同一区间里并集行数多于共同开市行数，持仓损益不再丢单边开市日。
+    span = frame.index[(frame.index >= oos.min()) & (frame.index <= oos.max())]
+    common_in_span = frame.index[(frame.index >= oos.min()) & (frame.index <= oos.max()) & frame["both_open"]]
+    assert len(oos) == len(span)
+    assert len(oos) > len(common_in_span)
+
+
+def test_sharpe_interval_scales_with_the_given_annualization():
+    rng = np.random.default_rng(21)
+    rets = rng.normal(0.0004, 0.01, size=200)
+    lo252, hi252 = sharpe_interval(rets, seed=5, n_boot=30, ann=252.0)
+    lo100, hi100 = sharpe_interval(rets, seed=5, n_boot=30, ann=100.0)
+    ratio = float(np.sqrt(252.0 / 100.0))
+    assert lo252 == pytest.approx(lo100 * ratio, rel=1e-9)
+    assert hi252 == pytest.approx(hi100 * ratio, rel=1e-9)
+
+
+def test_preview_and_walkforward_share_the_same_z():
+    from ah_pairs.v15.net_premium import adjusted_premium_z
+    from ah_pairs.v15.report import preview
+    from ah_pairs.v15.walkforward import prepare_frame
+
+    rng = np.random.default_rng(31)
+    n = 160
+    dates = pd.bdate_range("2021-01-04", periods=n)
+    a = 10.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, size=n)))
+    h = 8.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, size=n)))
+    frame = _frame(dates, a, h, np.full(n, 0.9), np.ones(n, dtype=bool))
+    premium = frame["log_a"] - frame["log_h"]
+    prepared, _gate = prepare_frame(frame, 60, z_window=60)
+    shared = adjusted_premium_z(premium, 60)
+    direct = prepared["z_net"].to_numpy(dtype=np.float64)
+    expected = shared.reindex(prepared.index).to_numpy(dtype=np.float64)
+    same = np.isfinite(direct) & np.isfinite(expected)
+    assert same.sum() > 20
+    assert np.allclose(direct[same], expected[same], atol=1e-12)
+    snap = preview(frame)
+    assert np.isfinite(snap["z"])
 
 
 def test_v14_engine_is_still_the_rollback_path():

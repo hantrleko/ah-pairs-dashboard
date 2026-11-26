@@ -16,7 +16,8 @@ import pandas as pd
 
 from ah_pairs.backtest import StrategyParams, run_backtest
 from ah_pairs.costs import CostParams
-from ah_pairs.data import _cache_file, _read_series, _write_series, dividend_path, load_h_dividends, load_pair
+from ah_pairs.data import _cache_file, _read_series, _write_series, dividend_path, get_fx, load_h_dividends, load_pair
+from ah_pairs.manifest import AUX, CORE, FAILED, SKIPPED, STALE, UPDATED, ci_annotations, core_failed, make_item, write_manifest
 from ah_pairs.price_quality import sanitize_close_series
 from ah_pairs.desk import DESK_A_CODES, default_desk_params, write_result
 from ah_pairs.paths import CACHE_DIR, PUBLISHED_DIR
@@ -36,36 +37,80 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-desk", action="store_true")
     parser.add_argument("--skip-borrow", action="store_true")
     parser.add_argument("--skip-panorama", action="store_true")
+    parser.add_argument(
+        "--enable-forward-write",
+        action="store_true",
+        help="正式启用前瞻账本写入。默认不写；测试、演练和手动重算都不应传这个参数。",
+    )
     args = parser.parse_args(argv)
     codes = [str(code).zfill(6) for code in args.codes] if args.codes else None
     errors: list[str] = []
+    items: list[dict] = []
     wrote = False
 
     if not args.skip_market:
-        wrote = _market(errors) or wrote
+        wrote = _market(errors, items) or wrote
     universe = _universe(codes)
+    bad_pairs: set[str] = set()
     if not args.skip_prices:
-        wrote = _prices(universe, args.start, args.end, errors) or wrote
+        prices_wrote, bad_pairs = _prices(universe, args.start, args.end, errors, items)
+        wrote = prices_wrote or wrote
         wrote = _cleanse_published_prices(universe, errors) or wrote
     if not args.skip_dividends:
-        wrote = _dividends(universe, errors) or wrote
+        wrote = _dividends(universe, errors, items) or wrote
     if not args.skip_scan:
-        wrote = _scan(args.start, args.end, errors) or wrote
+        wrote = _scan(args.start, args.end, errors, items) or wrote
     if not args.skip_desk:
-        wrote = _desk(codes, args.start, args.end, errors) or wrote
+        wrote = _desk(codes, args.start, args.end, errors, items, skip_pairs=bad_pairs) or wrote
     if not args.skip_borrow:
-        wrote = _borrow(errors) or wrote
+        wrote = _borrow(errors, items) or wrote
     if not args.skip_panorama:
-        wrote = _panorama(args.start, args.end, errors) or wrote
+        wrote = _panorama(args.start, args.end, errors, items) or wrote
+    forward_enabled = bool(args.enable_forward_write) or os.environ.get("AH_FORWARD_WRITE") == "1"
+    if forward_enabled:
+        wrote = _forward(args.end, errors, items) or wrote
+    else:
+        items.append(make_item("forward", kind=AUX, status=SKIPPED, detail="未启用：正式启账前不写前瞻账本"))
+
+    if items:
+        payload = write_manifest(items, PUBLISHED_DIR / "refresh_manifest.json")
+        for line in ci_annotations(items):
+            print(line, flush=True)
+        print(f"清单状态：{payload['status']}，共 {len(items)} 项。", flush=True)
 
     if errors:
         print(f"有 {len(errors)} 项没有完成。", flush=True)
         for item in errors:
             print(f"- {item}", flush=True)
-    if errors and not wrote:
+    if core_failed(items) or (errors and not wrote):
         return 1
     print("刷新结束。", flush=True)
     return 0
+
+
+def _series_end(path) -> pd.Timestamp | None:
+    """已发布或缓存文件里最后一根 K 线的日期。文件不在或读不出时返回 None。"""
+    try:
+        candidate = Path(path)
+        if candidate.exists():
+            series = _read_series(candidate)
+            if not series.empty:
+                return series.index.max()
+    except Exception:
+        pass
+    return None
+
+
+def _note_sources(notes) -> dict:
+    """从 load_pair 的 meta:src 提示里拆出每条腿的来源。"""
+    out: dict[str, str] = {}
+    for note in notes:
+        if not str(note).startswith("meta:src:"):
+            continue
+        parts = str(note).split(":", 3)
+        if len(parts) == 4:
+            out[parts[2]] = parts[3]
+    return out
 
 
 def _universe(codes: list[str] | None) -> pd.DataFrame:
@@ -75,7 +120,7 @@ def _universe(codes: list[str] | None) -> pd.DataFrame:
     return universe
 
 
-def _market(errors: list[str]) -> bool:
+def _market(errors: list[str], items: list[dict]) -> bool:
     from ah_pairs.market import load_ah_premium_index, load_southbound
     from ah_pairs.northbound import load_northbound
 
@@ -93,9 +138,17 @@ def _market(errors: list[str]) -> bool:
             src = CACHE_DIR / name
             wrote = publish_file(src, PUBLISHED_DIR / name) or wrote
             end = pd.Timestamp(series.dropna().index.max()).date()
+            items.append(make_item(name, kind=AUX, status=UPDATED, data_end=end, rows=len(series)))
             print(f"{name} 截至 {end}，{len(series)} 行。", flush=True)
         except Exception as exc:
             errors.append(f"{name}: {exc}")
+            items.append(make_item(
+                name,
+                kind=AUX,
+                status=FAILED,
+                data_end=_series_end(PUBLISHED_DIR / name),
+                detail=str(exc)[:300],
+            ))
             print(f"{name} 失败：{exc}", flush=True)
     return wrote
 
@@ -127,27 +180,79 @@ def _cleanse_published_prices(universe: pd.DataFrame, errors: list[str]) -> bool
     return wrote
 
 
-def _prices(universe: pd.DataFrame, start: str, end: str, errors: list[str]) -> bool:
+def _prices(universe: pd.DataFrame, start: str, end: str, errors: list[str], items: list[dict]) -> tuple[bool, set[str]]:
+    """一轮里港元汇率只下载一次，所有股票对共享同一条。返回 (是否有写入, 失败的股票)。"""
     wrote = False
+    bad: set[str] = set()
     if universe.empty:
         errors.append("行情：没有可刷新的股票")
-        return False
+        items.append(make_item("prices", kind=CORE, status=SKIPPED, detail="没有可刷新的股票"))
+        return False, bad
+
+    fx_series = None
+    try:
+        fx_series, fx_src = get_fx(refresh=True)
+        fx_end = fx_series.dropna().index.max() if not fx_series.dropna().empty else None
+        items.append(make_item("HKDCNY=X", kind=CORE, status=UPDATED, data_end=fx_end, rows=len(fx_series.dropna()), source=fx_src))
+    except Exception as exc:
+        errors.append(f"汇率: {exc}")
+        items.append(make_item(
+            "HKDCNY=X",
+            kind=CORE,
+            status=FAILED,
+            data_end=_series_end(_cache_file(PUBLISHED_DIR / "prices", "HKDCNY=X")),
+            detail=str(exc)[:300],
+        ))
+        print(f"汇率下载失败：{exc}，各股票对会自己再试。", flush=True)
+
     for row in universe.itertuples(index=False):
         try:
-            load_pair(row.a_code, row.h_code, "2010-01-01", end, refresh=True)
+            _frame, notes = load_pair(row.a_code, row.h_code, "2010-01-01", end, refresh=True, fx=fx_series)
             for ticker in (a_to_yahoo(row.a_code), h_to_yahoo(row.h_code), "HKDCNY=X"):
                 src = _cache_file(CACHE_DIR, ticker)
                 wrote = publish_file(src, _cache_file(PUBLISHED_DIR / "prices", ticker)) or wrote
+            sources = _note_sources(notes)
+            ends = [
+                _series_end(_cache_file(CACHE_DIR, a_to_yahoo(row.a_code))),
+                _series_end(_cache_file(CACHE_DIR, h_to_yahoo(row.h_code))),
+            ]
+            ends = [item for item in ends if item is not None]
+            data_end = min(ends) if ends else None
+            leg_sources = (str(sources.get("a", "")), str(sources.get("h", "")))
+            stale = any("沿用" in src or "失败" in src for src in leg_sources)
+            detail = ""
+            if "eastmoney" in leg_sources:
+                detail = "有一条腿用了东财回退，复权口径和 Yahoo 不同"
+            items.append(make_item(
+                f"prices {row.a_code}",
+                kind=CORE,
+                status=STALE if stale else UPDATED,
+                data_end=data_end,
+                source=f"a:{sources.get('a', '?')};h:{sources.get('h', '?')}",
+                detail=detail,
+            ))
+            if stale:
+                bad.add(str(row.a_code).zfill(6))
             print(f"行情 {row.a_code} 已发布。", flush=True)
         except Exception as exc:
             errors.append(f"行情 {row.a_code}: {exc}")
+            bad.add(str(row.a_code).zfill(6))
+            items.append(make_item(
+                f"prices {row.a_code}",
+                kind=CORE,
+                status=FAILED,
+                data_end=_series_end(_cache_file(PUBLISHED_DIR / "prices", a_to_yahoo(row.a_code))),
+                detail=str(exc)[:300],
+            ))
             print(f"行情 {row.a_code} 失败：{exc}", flush=True)
-    return wrote
+    return wrote, bad
 
 
-def _dividends(universe: pd.DataFrame, errors: list[str]) -> bool:
+def _dividends(universe: pd.DataFrame, errors: list[str], items: list[dict]) -> bool:
     wrote = False
     seen: set[str] = set()
+    failed: list[str] = []
+    total = 0
     for row in universe.itertuples(index=False):
         h_code = str(row.h_code).zfill(5)
         if h_code in seen:
@@ -158,31 +263,48 @@ def _dividends(universe: pd.DataFrame, errors: list[str]) -> bool:
             if series is None or series.empty:
                 print(f"分红 {h_code} 没有现金红利记录。", flush=True)
                 continue
+            total += 1
             ticker = h_to_yahoo(h_code)
             src = dividend_path(CACHE_DIR, ticker)
             wrote = publish_file(src, dividend_path(PUBLISHED_DIR / "dividends", ticker)) or wrote
             print(f"分红 {h_code} {len(series)} 条。", flush=True)
         except Exception as exc:
             errors.append(f"分红 {h_code}: {exc}")
+            failed.append(h_code)
             print(f"分红 {h_code} 失败：{exc}", flush=True)
+    if failed and not total:
+        status = FAILED
+    elif failed:
+        status = STALE
+    else:
+        status = UPDATED
+    items.append(make_item(
+        "dividends",
+        kind=AUX,
+        status=status,
+        rows=int(total),
+        detail=f"失败：{','.join(failed)}" if failed else "",
+    ))
     return wrote
 
 
-def _borrow(errors: list[str]) -> bool:
+def _borrow(errors: list[str], items: list[dict]) -> bool:
     from ah_pairs.borrow import load_borrow
 
     try:
         frame = load_borrow(refresh=True)
         day = pd.Timestamp(frame["date"].max()).date()
+        items.append(make_item("borrow", kind=AUX, status=UPDATED, data_end=day, rows=int(frame["a_code"].nunique())))
         print(f"融券名单 {day}，{frame['a_code'].nunique()} 只。", flush=True)
         return True
     except Exception as exc:
         errors.append(f"融券名单: {exc}")
+        items.append(make_item("borrow", kind=AUX, status=FAILED, detail=str(exc)[:300]))
         print(f"融券名单失败：{exc}", flush=True)
         return False
 
 
-def _scan(start: str, end: str, errors: list[str]) -> bool:
+def _scan(start: str, end: str, errors: list[str], items: list[dict]) -> bool:
     from ah_pairs.scan import scan_pairs, with_scan_meta, write_scan
 
     os.environ["AH_PUBLISH_SCAN"] = "1"
@@ -193,16 +315,25 @@ def _scan(start: str, end: str, errors: list[str]) -> bool:
         summary, returns = scan_pairs(universe, start, end, params)
         summary = with_scan_meta(summary, start, end, allow_short_a=False)
         write_scan(summary, returns)
+        n_err = int(summary["说明"].astype(str).str.len().gt(0).sum()) if "说明" in summary.columns else 0
+        items.append(make_item(
+            "scan",
+            kind=AUX,
+            status=STALE if n_err else UPDATED,
+            rows=int(len(summary)),
+            detail=f"{n_err} 只没有算出" if n_err else "",
+        ))
         print(f"扫描写出 {len(summary)} 行。", flush=True)
         return not summary.empty
     except Exception as exc:
         errors.append(f"扫描: {exc}")
+        items.append(make_item("scan", kind=AUX, status=FAILED, detail=str(exc)[:300]))
         print(f"扫描失败：{exc}", flush=True)
         traceback.print_exc()
         return False
 
 
-def _desk(requested: list[str] | None, start: str, end: str, errors: list[str]) -> bool:
+def _desk(requested: list[str] | None, start: str, end: str, errors: list[str], items: list[dict], skip_pairs: set[str] | None = None) -> bool:
     from ah_pairs.analysis import analyze_frame, walk_forward, warmup_start
     from ah_pairs.stability import slice_checks, stability_grid
 
@@ -211,12 +342,18 @@ def _desk(requested: list[str] | None, start: str, end: str, errors: list[str]) 
     if not codes:
         print("这次没有要预计算的快捷股票。", flush=True)
         return False
+    skip_pairs = skip_pairs or set()
     names = load_universe().set_index("a_code")
     params = default_desk_params()
     wrote = False
     for code in codes:
         if code not in names.index:
             errors.append(f"预计算 {code}: 股票池里没有")
+            continue
+        if code in skip_pairs:
+            # 行情这一轮没有更新。旧快照留着不覆盖，免得时间戳暗示它已经刷新。
+            items.append(make_item(f"desk {code}", kind=AUX, status=SKIPPED, detail="行情本轮没有更新，保留旧快照"))
+            print(f"预计算 {code} 跳过：行情本轮没有更新。", flush=True)
             continue
         h_raw = names.loc[code, "h_code"]
         if isinstance(h_raw, pd.Series):
@@ -243,16 +380,18 @@ def _desk(requested: list[str] | None, start: str, end: str, errors: list[str]) 
             checks = slice_checks(common)
             sample_end = common.index.max()
             write_result(code, params, start, end, sample_end, walk, grid, checks, include_costs=True)
+            items.append(make_item(f"desk {code}", kind=AUX, status=UPDATED, data_end=sample_end))
             print(f"预计算 {code} 完成，样本到 {pd.Timestamp(sample_end).date()}。", flush=True)
             wrote = True
         except Exception as exc:
             errors.append(f"预计算 {code}: {exc}")
+            items.append(make_item(f"desk {code}", kind=AUX, status=FAILED, detail=str(exc)[:300]))
             print(f"预计算 {code} 失败：{exc}", flush=True)
             traceback.print_exc()
     return wrote
 
 
-def _panorama(start: str, end: str, errors: list[str]) -> bool:
+def _panorama(start: str, end: str, errors: list[str], items: list[dict]) -> bool:
     from ah_pairs.desk import default_desk_params
     from ah_pairs.panorama import build_panorama, write_panorama
 
@@ -261,6 +400,13 @@ def _panorama(start: str, end: str, errors: list[str]) -> bool:
         table, meta = build_panorama(universe, start, end, default_desk_params())
         path = write_panorama(table, meta)
         skipped = meta.get("skipped") or []
+        items.append(make_item(
+            "panorama",
+            kind=AUX,
+            status=STALE if skipped else UPDATED,
+            rows=int(len(table)),
+            detail=f"跳过 {len(skipped)} 只" if skipped else "",
+        ))
         print(f"全景 {len(table)} 行，跳过 {len(skipped)}。", flush=True)
         if path is None:
             errors.append("全景: 本地没有可用行情")
@@ -268,7 +414,46 @@ def _panorama(start: str, end: str, errors: list[str]) -> bool:
         return True
     except Exception as exc:
         errors.append(f"全景: {exc}")
+        items.append(make_item("panorama", kind=AUX, status=FAILED, detail=str(exc)[:300]))
         print(f"全景失败：{exc}", flush=True)
+        traceback.print_exc()
+        return False
+
+
+def _forward(end: str, errors: list[str], items: list[dict]) -> bool:
+    """前瞻账本只在这里写。页面打开和手动重算都不写。"""
+    from ah_pairs.forward import update_batch
+    from ah_pairs.presets import PRESETS
+
+    try:
+        universe = liquid_subset(load_universe())
+        summaries = update_batch(universe, list(PRESETS), end=end)
+        written = sum(int(s["written"]) for s in summaries)
+        conflicts = sum(len(s["conflicts"]) for s in summaries)
+        gaps = [f"{s['a_code']}/{s['preset_id']}" for s in summaries if s.get("gap")]
+        backfilled = sum(int(s.get("backfilled") or 0) for s in summaries)
+        detail = ""
+        if gaps:
+            detail = f"{len(gaps)} 条账本缺口"
+        if conflicts:
+            detail = (detail + "；" if detail else "") + f"{conflicts} 条封存冲突"
+        if backfilled:
+            detail = (detail + "；" if detail else "") + f"{backfilled} 行补回放"
+        items.append(make_item(
+            "forward",
+            kind=AUX,
+            status=STALE if gaps or conflicts else UPDATED,
+            rows=int(written),
+            detail=detail,
+        ))
+        print(f"前瞻账本写入 {written} 行，缺口 {len(gaps)}，冲突 {conflicts}，补回放 {backfilled}。", flush=True)
+        if conflicts:
+            errors.append(f"前瞻账本: {conflicts} 条封存冲突，旧行未动")
+        return True
+    except Exception as exc:
+        errors.append(f"前瞻账本: {exc}")
+        items.append(make_item("forward", kind=AUX, status=FAILED, detail=str(exc)[:300]))
+        print(f"前瞻账本失败：{exc}", flush=True)
         traceback.print_exc()
         return False
 

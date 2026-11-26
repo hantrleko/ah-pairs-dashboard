@@ -195,6 +195,24 @@ def test_refresh_with_everything_skipped_does_not_download():
     assert main(["--skip-prices", "--skip-dividends", "--skip-market", "--skip-scan", "--skip-desk", "--skip-borrow", "--skip-panorama"]) == 0
 
 
+def test_forward_write_is_opt_in_and_off_by_default(monkeypatch, tmp_path):
+    """默认运行不产生正式账本记录：未传 --enable-forward-write 时连 update_batch 都不调用。"""
+    from ah_pairs import refresh as refresh_mod
+
+    calls = []
+
+    def fake_forward(end, errors, items):
+        calls.append(end)
+        return False
+
+    monkeypatch.setattr(refresh_mod, "_forward", fake_forward)
+    rc = refresh_mod.main(["--skip-prices", "--skip-dividends", "--skip-market", "--skip-scan", "--skip-desk", "--skip-borrow", "--skip-panorama"])
+    assert rc == 0
+    assert calls == []
+    rc = refresh_mod.main(["--skip-prices", "--skip-dividends", "--skip-market", "--skip-scan", "--skip-desk", "--skip-borrow", "--skip-panorama", "--enable-forward-write"])
+    assert calls != []
+
+
 def _page(end: date, a_code: str = "601318", **changes):
     params = default_desk_params()
     if changes:

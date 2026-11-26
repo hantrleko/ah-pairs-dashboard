@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ah_pairs.v15.adaptive import half_life_tail, latest_half_life
-from ah_pairs.v15.net_premium import SCENARIOS, dividend_gap_note, net_z, trailing_yield, wedge_annual, wedge_is_implausible
+from ah_pairs.v15.net_premium import SCENARIOS, adjusted_premium_z, dividend_gap_note, trailing_yield, wedge_annual, wedge_is_implausible
 
 
 def result_key(a_code: str, start, end, allow_short_a: bool) -> str:
@@ -18,7 +18,6 @@ def preview(frame: pd.DataFrame, calendar: pd.DataFrame | None = None) -> dict:
     log_h = frame["log_h"].astype("float64")
     premium = (log_a - log_h).astype("float64")
     gaps = dividend_gap_note(calendar, frame.index.min(), frame.index.max())
-    wedge = np.zeros(len(frame), dtype=np.float64)
     annual = np.nan
     if calendar is not None and not calendar.empty and "a_cny" in frame.columns:
         last = frame.index[-1]
@@ -29,9 +28,12 @@ def preview(frame: pd.DataFrame, calendar: pd.DataFrame | None = None) -> dict:
         if np.isfinite(d_a) and np.isfinite(d_h):
             tau_a, tau_h = SCENARIOS["base"]
             annual = wedge_annual(d_a, d_h, tau_a, tau_h)
-            wedge[:] = annual
             gaps = []
-    z = net_z(premium, wedge, 60).dropna()
+    # z 与样本外回测、前瞻账本共用同一条复权价溢价 z，窗口取 v15-default 预设，不再单独用 60。
+    # 税后股息差只作参考显示，不进入信号。
+    from ah_pairs.presets import get_preset
+
+    z = adjusted_premium_z(premium, int(get_preset("v15-default").z_window)).dropna()
     life = latest_half_life(log_a, log_h, 120)
     path = half_life_tail(log_a, log_h, window=120, tail=90)
     finite = path[np.isfinite(path)]

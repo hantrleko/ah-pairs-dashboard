@@ -187,7 +187,9 @@ def get_close(
         fresh = pd.Series(dtype=float)
         yahoo_error = str(exc)
     source = "yahoo"
-    if fresh.empty and not cached.empty and not refresh:
+    if fresh.empty and not cached.empty:
+        # 东财前复权和 Yahoo 含分红再投资的口径不同。已有缓存时沿用旧数据，
+        # 免得同一批已发布结果在两种复权口径之间来回跳。东财只在没有缓存时兜底。
         return cached, "行情下载失败，沿用本地缓存"
     if fresh.empty and kind in {"a", "h"} and code:
         try:
@@ -289,6 +291,8 @@ def assemble_pair(a_px, h_px, fx, start, end) -> tuple[pd.DataFrame, list[str]]:
     px["log_h"] = np.log(px["h_cny"])
     px["ret_a"] = px["a_cny"].pct_change().where(px["a_raw"].notna(), 0.0)
     px["ret_h"] = px["h_cny"].pct_change().where(px["h_raw"].notna(), 0.0)
+    px["a_priced"] = px["a_raw"].notna()
+    px["h_priced"] = px["h_raw"].notna()
     px = px.drop(columns=["a_raw", "h_raw"])
     px.index.name = "date"
     return px, warnings
@@ -301,8 +305,12 @@ def load_pair(
     end,
     cache_dir: Path = CACHE_DIR,
     refresh: bool = False,
+    fx=None,
 ) -> tuple[pd.DataFrame, list[str]]:
-    """下载一对 A+H，并把 H 股换成人民币。start/end 含首尾。"""
+    """下载一对 A+H，并把 H 股换成人民币。start/end 含首尾。
+
+    fx 传入已经下载好的汇率序列时不再重复下载，批量刷新一轮只取一次。
+    """
     warnings: list[str] = []
     a_ticker = a_to_yahoo(a_code)
     h_ticker = h_to_yahoo(h_code)
@@ -313,7 +321,11 @@ def load_pair(
     h_px, h_src = get_close(
         h_ticker, cache_dir, kind="h", code=h_code, refresh=refresh, list_date=h_list
     )
-    fx, fx_src = get_fx(cache_dir, refresh=refresh)
+    if fx is not None:
+        fx_series, fx_src = pd.Series(fx, dtype=float), "shared"
+    else:
+        fx_series, fx_src = get_fx(cache_dir, refresh=refresh)
+    fx = fx_series
     warnings.append(f"meta:src:a:{a_src}")
     warnings.append(f"meta:src:h:{h_src}")
     warnings.append(f"meta:src:fx:{fx_src}")

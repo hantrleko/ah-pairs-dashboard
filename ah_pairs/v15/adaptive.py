@@ -153,6 +153,127 @@ def pair_no_trade_share(log_a, log_h, window: int = 120) -> float:
     return float(blocked / checked)
 
 
+def new_exec_state() -> dict:
+    """逐日推进的执行状态。空仓、无挂单、exit_z 在开仓时锁定。"""
+    return {"held": 0, "pending": 0, "age": 0, "exit_z": None}
+
+
+def exec_step(
+    state: dict,
+    *,
+    date,
+    both_open: bool,
+    ret_a: float = 0.0,
+    ret_h: float = 0.0,
+    fx: float = 0.9,
+    z_now: float = np.nan,
+    allowed: bool = True,
+    z_in: float = 2.0,
+    z_out: float = 0.5,
+    max_hold: int = 60,
+    allow_short_a: bool = False,
+    stop_z: float = STOP_Z,
+    schedule: CostSchedule | None = None,
+) -> dict:
+    """推进一天。持仓用前一日权重赚当日收益；单边日不成交、不读 z。
+
+    出场阈值用 state 里开仓时锁定的 exit_z；空仓时没有出场决策。
+    返回当天的持仓、收益、成交明细和机器可读的原因代码。
+    """
+    schedule = schedule or CostSchedule()
+    prev = int(state["held"])
+    held = int(state["held"])
+    pending = int(state["pending"])
+    age = int(state["age"])
+    if both_open:
+        held = pending
+    if both_open and prev != 0:
+        age += 1
+    if held == 0:
+        age = 0
+    ra = float(ret_a) if np.isfinite(ret_a) else 0.0
+    rh = float(ret_h) if np.isfinite(ret_h) else 0.0
+    gross = (0.5 * prev) * ra + (-0.5 * prev) * rh
+    cost = 0.0
+    rows: list[dict] = []
+    if both_open and held != prev:
+        traded = abs(held - prev)
+        for _step in range(int(traded)):
+            a_side = "buy" if held > prev else "sell"
+            h_side = "sell" if held > prev else "buy"
+            for leg, side in (("A", a_side), ("H", h_side)):
+                row = fill_cost(
+                    date,
+                    leg,
+                    side,
+                    0.5 * BOOK_NOTIONAL,
+                    fx,
+                    schedule,
+                    half_spread=0.0,
+                    charge_fx=(leg == "H"),
+                )
+                rows.append(row)
+                cost += row["total"] / BOOK_NOTIONAL
+        if held != 0 and prev == 0:
+            state["exit_z"] = float(z_out)
+        elif held == 0:
+            state["exit_z"] = None
+    state["held"] = held
+    state["age"] = age
+    blocked = False
+    short_signal = False
+    stop_hit = False
+    if not both_open:
+        # 单边日不读 z、不产生新信号，也不覆盖还没成交的挂单。
+        reason = "one_sided"
+    else:
+        exit_z = state["exit_z"] if state["exit_z"] is not None else float(z_out)
+        desired = held
+        reason = "hold" if held != 0 else "flat"
+        if np.isfinite(z_now) and held != 0 and abs(z_now) >= float(stop_z):
+            desired = 0
+            stop_hit = True
+            reason = "exit_stop"
+        elif np.isfinite(z_now) and held != 0 and age >= int(max_hold):
+            desired = 0
+            reason = "exit_max_hold"
+        elif np.isfinite(z_now) and held != 0 and abs(z_now) <= float(exit_z):
+            desired = 0
+            reason = "exit_z_out"
+        elif held == 0 and np.isfinite(z_now):
+            if abs(z_now) >= float(z_in) and not allowed:
+                reason = "gate_blocked"
+                blocked = True
+            elif allowed:
+                if z_now <= -float(z_in):
+                    desired = 1
+                    reason = "enter_long_spread"
+                elif z_now >= float(z_in):
+                    short_signal = True
+                    if allow_short_a:
+                        desired = -1
+                        reason = "enter_short_spread"
+                    else:
+                        blocked = True
+                        desired = 0
+                        reason = "short_a_blocked"
+        state["pending"] = int(desired)
+    return {
+        "position": int(held),
+        "signal": int(state["pending"]),
+        "pending": int(state["pending"]) != int(held),
+        "gross": float(gross),
+        "cost": float(cost),
+        "net": float(gross - cost),
+        "rows": rows,
+        "reason": reason,
+        "blocked": bool(blocked),
+        "short_signal": bool(short_signal),
+        "stop": bool(stop_hit),
+        "age": int(age),
+    }
+
+
 def execute(
     frame: pd.DataFrame,
     z: np.ndarray,
@@ -176,67 +297,37 @@ def execute(
     cost = np.zeros(n, dtype=np.float64)
     gross = np.zeros(n, dtype=np.float64)
     rows: list[dict] = []
-    held = 0
-    pending = 0
-    age = 0
+    state = new_exec_state()
     blocked = 0
     signals = 0
     stop_exit = 0
     for t in range(n):
-        prev = held
-        if both[t]:
-            held = pending
-        if both[t] and prev != 0:
-            age += 1
-        if held == 0:
-            age = 0
-        position[t] = held
-        w_a = 0.5 * held
-        w_h = -0.5 * held
-        ra = ret_a[t] if np.isfinite(ret_a[t]) else 0.0
-        rh = ret_h[t] if np.isfinite(ret_h[t]) else 0.0
-        gross[t] = (0.5 * prev) * ra + (-0.5 * prev) * rh
-        if both[t] and held != prev:
-            traded = abs(held - prev)
-            fx = float(frame["fx"].iloc[t]) if "fx" in frame.columns else 0.9
-            for _step in range(int(traded)):
-                a_side = "buy" if held > prev else "sell"
-                h_side = "sell" if held > prev else "buy"
-                for leg, side in (("A", a_side), ("H", h_side)):
-                    row = fill_cost(
-                        dates[t],
-                        leg,
-                        side,
-                        0.5 * BOOK_NOTIONAL,
-                        fx,
-                        schedule,
-                        half_spread=0.0,
-                        charge_fx=(leg == "H"),
-                    )
-                    rows.append(row)
-                    cost[t] += row["total"] / BOOK_NOTIONAL
-        if not both[t]:
-            continue
-        z_now = signal[t]
-        desired = held
-        if np.isfinite(z_now) and held != 0 and abs(z_now) >= STOP_Z:
-            desired = 0
+        day = exec_step(
+            state,
+            date=dates[t],
+            both_open=bool(both[t]),
+            ret_a=ret_a[t],
+            ret_h=ret_h[t],
+            fx=float(frame["fx"].iloc[t]) if "fx" in frame.columns else 0.9,
+            z_now=signal[t],
+            allowed=bool(allowed[t]),
+            z_in=z_in,
+            z_out=z_out,
+            max_hold=max_hold,
+            allow_short_a=allow_short_a,
+            stop_z=STOP_Z,
+            schedule=schedule,
+        )
+        position[t] = day["position"]
+        cost[t] = day["cost"]
+        gross[t] = day["gross"]
+        rows.extend(day["rows"])
+        if day["reason"] == "short_a_blocked":
+            blocked += 1
+        if day["short_signal"]:
+            signals += 1
+        if day["stop"]:
             stop_exit += 1
-        elif np.isfinite(z_now) and held != 0 and age >= int(max_hold):
-            desired = 0
-        elif np.isfinite(z_now) and held != 0 and abs(z_now) <= float(z_out):
-            desired = 0
-        elif held == 0 and np.isfinite(z_now) and allowed[t]:
-            if z_now <= -float(z_in):
-                desired = 1
-            elif z_now >= float(z_in):
-                signals += 1
-                if allow_short_a:
-                    desired = -1
-                else:
-                    blocked += 1
-                    desired = 0
-        pending = desired
     net = gross - cost
     return {
         "position": position,

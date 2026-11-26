@@ -2,6 +2,8 @@
 
 训练折只看到测试起点之前、再去掉 embargo 的共同开市日。
 网格是 z_in × z_out × W_est。并列时取得成交更少的那组。
+分折边界和信号按共同开市日确定；测试段用两地交易日的并集记账，
+持仓在单边开市日记开市一边的涨跌，当天不成交、不收调仓费。
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import pandas as pd
 from ah_pairs.backtest import sample_clock
 from ah_pairs.cointegration import engle_granger
 from ah_pairs.v15.adaptive import ar1_phi, execute, gate_open, half_life_from_phi
-from ah_pairs.v15.net_premium import net_z
+from ah_pairs.v15.net_premium import adjusted_premium_z
 
 Z_IN_GRID = (1.5, 2.0, 2.5)
 Z_OUT_GRID = (0.0, 0.5, 1.0)
@@ -78,8 +80,7 @@ def prepare_frame(frame: pd.DataFrame, w_est: int, z_window: int = 60) -> tuple[
     for end in range(span, len(work)):
         life[end] = half_life_from_phi(ar1_phi(resid[end - span : end]))
     premium = log_a - log_h
-    wedge = np.zeros(len(work), dtype=np.float64)
-    z = net_z(premium, wedge, int(z_window)).to_numpy(dtype=np.float64)
+    z = adjusted_premium_z(premium, int(z_window)).to_numpy(dtype=np.float64)
     gate = np.array([gate_open(item, None)[0] if np.isfinite(item) else False for item in life], dtype=bool)
     work = work.copy()
     work["z_net"] = z
@@ -131,6 +132,19 @@ def score_variant(frame: pd.DataFrame, z_in: float, z_out: float, w_est: int, al
     return stats
 
 
+def union_exec_frame(frame: pd.DataFrame, prepared: pd.DataFrame, gate, eval_index) -> tuple[pd.DataFrame, np.ndarray]:
+    """共同开市日上估计的 z 和闸门，对齐到并集日历的执行表。
+
+    单边开市日的 z 留空，execute 本来就不读；行必须留着，持仓才记开市一边的损益。
+    """
+    z_all = prepared["z_net"]
+    gate_all = pd.Series(np.asarray(gate, dtype=bool), index=prepared.index)
+    work = frame.loc[eval_index].copy()
+    work["z_net"] = z_all.reindex(eval_index).to_numpy(dtype=np.float64)
+    exec_gate = gate_all.reindex(eval_index, fill_value=False).to_numpy(dtype=bool)
+    return work, exec_gate
+
+
 def select_params(
     frame: pd.DataFrame,
     *,
@@ -139,24 +153,32 @@ def select_params(
     min_trades: int = 6,
     allow_short_a: bool = False,
     z_window: int = 40,
+    z_in_grid=Z_IN_GRID,
+    z_out_grid=Z_OUT_GRID,
+    w_est_grid=W_EST_GRID,
 ) -> dict:
-    """只在传入的训练样本上选参数。调用方要先切掉测试折和 embargo。"""
+    """只在传入的训练样本上选参数。调用方要先切掉测试折和 embargo。
+
+    z 和半衰期在共同开市日上估计；验证段用并集日历记账，和样本外同一套。
+    """
     common = _common_index(frame)
     if len(common) < int(inner_train) + int(inner_valid):
         split = max(len(common) // 2, 1)
         valid_index = common[split:]
     else:
         valid_index = common[-int(inner_valid) :]
+    if len(valid_index) == 0:
+        return {"z_in": 2.0, "z_out": 0.5, "W_est": 120, "qualified": False}
+    eval_index = frame.index[(frame.index >= valid_index[0]) & (frame.index <= valid_index[-1])]
+    estimation = frame.loc[common]
     best = None
     prepared_by_window = {}
-    for w_est in W_EST_GRID:
-        work, gate = prepare_frame(frame, w_est, z_window=z_window)
-        positions = work.index.get_indexer(valid_index)
-        positions = positions[positions >= 0]
-        prepared_by_window[w_est] = (work.iloc[positions], gate[positions])
-    for w_est in W_EST_GRID:
-        for z_in in Z_IN_GRID:
-            for z_out in Z_OUT_GRID:
+    for w_est in w_est_grid:
+        work, gate = prepare_frame(estimation, w_est, z_window=z_window)
+        prepared_by_window[w_est] = union_exec_frame(frame, work, gate, eval_index)
+    for w_est in w_est_grid:
+        for z_in in z_in_grid:
+            for z_out in z_out_grid:
                 if z_out >= z_in:
                     continue
                 stats = score_variant(
@@ -195,31 +217,41 @@ def choose_for_test_start(
     inner_valid: int = 256,
     min_trades: int = 6,
     z_window: int = 40,
+    z_in_grid=Z_IN_GRID,
+    z_out_grid=Z_OUT_GRID,
+    w_est_grid=W_EST_GRID,
 ) -> dict:
     index = training_index(frame, test_start, train=train, embargo=embargo)
     if len(index) == 0:
         return {"z_in": 2.0, "z_out": 0.5, "W_est": 120, "qualified": False}
+    # 训练段的边界按共同开市日数确定；段内的单边开市行保留给执行记账。
+    span = frame.loc[(frame.index >= index[0]) & (frame.index <= index[-1])]
     return select_params(
-        frame.loc[index],
+        span,
         inner_train=inner_train,
         inner_valid=inner_valid,
         min_trades=min_trades,
         allow_short_a=allow_short_a,
         z_window=z_window,
+        z_in_grid=z_in_grid,
+        z_out_grid=z_out_grid,
+        w_est_grid=w_est_grid,
     )
 
 
-def sharpe_interval(returns, seed: int, n_boot: int = 200, block: int = 5) -> tuple[float, float]:
+def sharpe_interval(returns, seed: int, n_boot: int = 200, block: int = 5, ann: float = 252.0) -> tuple[float, float]:
+    """区块自助法夏普区间。年化因子与点估计用同一个，不再固定乘 √252。"""
     values = np.asarray(returns, dtype=np.float64)
     values = values[np.isfinite(values)]
     if len(values) < 10:
         return np.nan, np.nan
+    factor = float(ann) if np.isfinite(ann) and ann > 0 else 252.0
     rng = np.random.default_rng(int(seed))
     stats = np.empty(int(n_boot), dtype=np.float64)
     for draw in range(int(n_boot)):
         sample = _stationary_bootstrap(values.reshape(-1, 1), block, rng)[:, 0]
         vol = float(np.std(sample, ddof=1))
-        stats[draw] = float(np.mean(sample) / vol * math.sqrt(252.0)) if vol > 0 else np.nan
+        stats[draw] = float(np.mean(sample) / vol * math.sqrt(factor)) if vol > 0 else np.nan
     finite = stats[np.isfinite(stats)]
     if len(finite) < 10:
         return np.nan, np.nan
@@ -372,21 +404,22 @@ def walk_forward(
             z_window=z_window,
         )
         test_index = common[(common >= fold["test_start"]) & (common <= fold["test_end"])]
+        eval_index = frame.index[(frame.index >= fold["test_start"]) & (frame.index <= fold["test_end"])]
         train_index = training_index(frame, fold["test_start"], train=train, embargo=embargo)
         history = train_index[-max(W_EST_GRID) :]
         span_index = history.append(test_index)
         span = frame.loc[span_index]
-        test_frame = frame.loc[test_index]
         eg_p, hl = _eg_at(frame.loc[train_index]) if len(train_index) else (np.nan, np.nan)
         paths = {}
         chosen_stats = None
+        eg_blocked = bool(np.isfinite(eg_p) and eg_p > 0.10)
         for w_est in W_EST_GRID:
             prepared, gate = prepare_frame(span, w_est, z_window=z_window)
-            positions = prepared.index.get_indexer(test_index)
-            positions = positions[positions >= 0]
-            test_work = prepared.iloc[positions]
-            test_gate = gate[positions]
-            if w_est == chosen["W_est"] and np.isfinite(eg_p) and eg_p > 0.10:
+            # 信号和半衰期仍在共同开市日上估计；执行表改用并集日历，
+            # 让持仓在单边开市日记开市一边的涨跌。
+            test_work, test_gate = union_exec_frame(frame, prepared, gate, eval_index)
+            if eg_blocked:
+                # 折起点的 EG 闸门对同一折里所有候选一致，不只是最后被挑中的那个窗口。
                 test_gate = np.zeros(len(test_work), dtype=bool)
             for z_in in Z_IN_GRID:
                 for z_out in Z_OUT_GRID:
@@ -408,8 +441,10 @@ def walk_forward(
         if chosen_stats is None:
             continue
         result, eg_p, hl = chosen_stats
-        stats = _performance(result["net"], test_frame.index, _trade_count(result["position"]))
-        lo, hi = sharpe_interval(result["net"], seed=int(seed) + int(fold["fold_id"]) * 17, n_boot=n_boot)
+        stats = _performance(result["net"], eval_index, _trade_count(result["position"]))
+        clock = sample_clock(eval_index)
+        ann = clock["bars_per_year"] if np.isfinite(clock["bars_per_year"]) and clock["bars_per_year"] > 0 else 252.0
+        lo, hi = sharpe_interval(result["net"], seed=int(seed) + int(fold["fold_id"]) * 17, n_boot=n_boot, ann=ann)
         matrix = pd.DataFrame({f"{a}|{b}|{c}": path for (a, b, c), path in paths.items()})
         checked = reality_check(matrix, seed=int(seed) + int(fold["fold_id"]), n_boot=n_boot)
         sensitive = sensitivity_rc(matrix, seed=int(seed) + int(fold["fold_id"]), n_boot=max(n_boot // 2, 20))
@@ -441,7 +476,7 @@ def walk_forward(
             }
         )
         variant_paths.append(result["net"])
-        oos_indexes.append(pd.DatetimeIndex(test_frame.index))
+        oos_indexes.append(pd.DatetimeIndex(eval_index))
         blocked_n += int(result["n_blocked"])
         signal_n += int(result["n_short_a_signals"])
     table = pd.DataFrame(rows)
@@ -459,6 +494,7 @@ def walk_forward(
         "n_folds": int(len(table)),
         "folds_insufficient": int(len(table)) < 4,
         "oos": summary,
+        "oos_index": stitched_index,
         "blocked_share": blocked,
         "seed": int(seed),
         "engine": "v15",

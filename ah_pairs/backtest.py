@@ -164,6 +164,71 @@ def target_weights(direction: float, beta: float) -> tuple[float, float]:
     return w_a, w_h
 
 
+def positions_with_reasons(
+    z: np.ndarray,
+    beta: np.ndarray,
+    params: StrategyParams,
+    tradable: np.ndarray | None = None,
+    short_a_days: np.ndarray | None = None,
+) -> tuple[np.ndarray, list[str]]:
+    """和 positions_from_z 同一套状态机，另外返回每个时点的机器可读原因。
+
+    页面和账本只读这些原因，不自己反推信号逻辑。
+    """
+    n = len(z)
+    target = np.zeros(n, dtype=int)
+    reasons: list[str] = []
+    held = 0
+    can_trade = np.ones(n, dtype=bool) if tradable is None else np.asarray(tradable, dtype=bool)
+    for t in range(n):
+        if not can_trade[t]:
+            target[t] = held
+            reasons.append("one_sided")
+            continue
+        allow_short = params.allow_short_a
+        if short_a_days is not None:
+            allow_short = bool(allow_short and short_a_days[t])
+        before = held
+        z_now = float(z[t])
+        reason = "hold" if held != 0 else "flat"
+        if held == -1 and not allow_short:
+            held = 0
+            reason = "short_a_forced_exit"
+        elif not np.isfinite(z_now):
+            pass
+        elif held == 0:
+            if z_now >= params.entry_z:
+                if allow_short:
+                    held = -1
+                    reason = "enter_short_spread"
+                else:
+                    reason = "short_a_blocked"
+            elif z_now <= -params.entry_z:
+                held = 1
+                reason = "enter_long_spread"
+        elif held == 1:
+            if params.stop_z > 0 and z_now <= -params.stop_z:
+                held = 0
+                reason = "exit_stop"
+            elif z_now >= -params.exit_z:
+                held = 0
+                reason = "exit_z_out"
+        else:
+            if params.stop_z > 0 and z_now >= params.stop_z:
+                held = 0
+                reason = "exit_stop"
+            elif z_now <= params.exit_z:
+                held = 0
+                reason = "exit_z_out"
+        if params.require_positive_beta and not (np.isfinite(beta[t]) and beta[t] > 0):
+            if held != 0 or before != 0:
+                reason = "beta_blocked"
+            held = 0
+        target[t] = held
+        reasons.append(reason)
+    return target, reasons
+
+
 def positions_from_z(
     z: np.ndarray,
     beta: np.ndarray,

@@ -66,6 +66,17 @@ def net_z(premium, wedge, window: int) -> pd.Series:
     return pd.Series(values.to_numpy(dtype=np.float64), index=prem.index, dtype="float64", name="z_net")
 
 
+def adjusted_premium_z(premium, window: int) -> pd.Series:
+    """复权价溢价 z。预览和样本外回测共用这一条，保证同一个 z。
+
+    常数楔子经过滚动去均值后恒等于零，所以它就是 net_z(premium, 0)。
+    税后股息差要让 z 真正不同，需要逐日变化的楔子；在那之前 z 只来自复权价。
+    """
+    prem = pd.Series(np.asarray(premium, dtype=np.float64), index=getattr(premium, "index", None), dtype="float64")
+    out = net_z(prem, np.zeros(len(prem), dtype=np.float64), window)
+    return out.rename("z_premium")
+
+
 def clean_dividend_calendar(calendar: pd.DataFrame, a_dates, h_dates) -> tuple[pd.DataFrame, list[str]]:
     """丢掉非正股息和没有落在该腿开市日上的除净日。丢弃原因写进日志。"""
     empty = pd.DataFrame(columns=["leg", "ex_date", "dps", "record_date", "source"])
