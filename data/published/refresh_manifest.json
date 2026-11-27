@@ -1,14 +1,14 @@
 {
-  "generated_at_utc": "2026-11-26T19:15:47.448607+00:00",
-  "generated_at_beijing": "2026-11-27T03:15:47.448607+08:00",
-  "status": "partial",
+  "generated_at_utc": "2026-11-27T19:10:00.472095+00:00",
+  "generated_at_beijing": "2026-11-28T03:10:00.472095+08:00",
+  "status": "ok",
   "items": [
     {
       "name": "northbound.parquet",
       "kind": "aux",
       "status": "updated",
       "data_end": "2024-08-16",
-      "rows": 2798,
+      "rows": 2799,
       "source": "",
       "detail": ""
     },
@@ -16,26 +16,26 @@
       "name": "southbound.parquet",
       "kind": "aux",
       "status": "updated",
-      "data_end": "2026-11-26",
-      "rows": 2759,
+      "data_end": "2026-11-27",
+      "rows": 2760,
       "source": "",
       "detail": ""
     },
     {
       "name": "hsahp.parquet",
       "kind": "aux",
-      "status": "failed",
-      "data_end": null,
-      "rows": null,
+      "status": "updated",
+      "data_end": "2026-11-27",
+      "rows": 5293,
       "source": "",
-      "detail": "沿用截至 2026-11-17 的缓存。更新失败：没有下载到恒生 AH 溢价指数。sina: 'date'; ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+      "detail": ""
     },
     {
       "name": "HKDCNY=X",
       "kind": "core",
       "status": "updated",
-      "data_end": "2026-11-26",
-      "rows": 4402,
+      "data_end": "2026-11-27",
+      "rows": 4403,
       "source": "yahoo",
       "detail": ""
     },
@@ -358,7 +358,7 @@
       "name": "desk 601318",
       "kind": "aux",
       "status": "updated",
-      "data_end": "2026-11-25",
+      "data_end": "2026-11-26",
       "rows": null,
       "source": "",
       "detail": ""
@@ -367,7 +367,7 @@
       "name": "desk 601398",
       "kind": "aux",
       "status": "updated",
-      "data_end": "2026-11-25",
+      "data_end": "2026-11-26",
       "rows": null,
       "source": "",
       "detail": ""
@@ -376,7 +376,7 @@
       "name": "desk 600036",
       "kind": "aux",
       "status": "updated",
-      "data_end": "2026-11-25",
+      "data_end": "2026-11-26",
       "rows": null,
       "source": "",
       "detail": ""
@@ -385,7 +385,7 @@
       "name": "desk 601857",
       "kind": "aux",
       "status": "updated",
-      "data_end": "2026-11-25",
+      "data_end": "2026-11-26",
       "rows": null,
       "source": "",
       "detail": ""
@@ -394,7 +394,7 @@
       "name": "borrow",
       "kind": "aux",
       "status": "updated",
-      "data_end": "2026-11-26",
+      "data_end": "2026-11-27",
       "rows": 4133,
       "source": "",
       "detail": ""
