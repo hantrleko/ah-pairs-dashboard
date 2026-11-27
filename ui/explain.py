@@ -139,10 +139,13 @@ def render_v14_live_card(page) -> None:
     labels = position_labels()
     z = frame["z"].astype("float64").iloc[-1]
     position = int(frame["position"].iloc[-1]) if "position" in frame.columns else 0
-    col1, col2, col3 = st.columns(3)
-    col1.markdown(tx("**观察到了什么**", "**What was observed**"))
-    col1.write(tx(f"z = {num(z, 2)}；入场 |z| ≥ {page.params.entry_z:.1f}，退出 |z| < {page.params.exit_z:.1f}，止损 |z| ≥ {page.params.stop_z:.1f}。", f"z = {num(z, 2)}; entry |z| ≥ {page.params.entry_z:.1f}, exit |z| < {page.params.exit_z:.1f}, stop |z| ≥ {page.params.stop_z:.1f}."))
-    col2.markdown(tx("**规则给出什么**", "**What the rules say**"))
-    col2.write(reason_label(reason))
-    col3.markdown(tx("**账户实际是什么**", "**What the account holds**"))
-    col3.write(tx(f"当前持仓：{labels.get(position, '—')}。信号事件和成交分开：信号先出，按 T+1 规则在下一次两边都开市的收盘成交。", f"Position: {labels.get(position, '—')}. Signals and fills are separate: the signal comes first and fills at the next close when both markets are open."))
+    observe = tx(f"z = {num(z, 2)}；入场 ±{page.params.entry_z:g}，退出 ±{page.params.exit_z:g}", f"z = {num(z, 2)}; entry ±{page.params.entry_z:g}, exit ±{page.params.exit_z:g}")
+    rule = reason_label(reason)
+    account = tx(f"持仓：{labels.get(position, '—')}，信号按 T+1 在下一次共同开市收盘成交", f"Position: {labels.get(position, '—')}; signals fill at the next common close under T+1")
+    st.markdown(
+        tx(
+            f'<div class="ef-flow"><div class="step"><h5>观察到了什么</h5><p>{observe}</p></div><div class="arrow">→</div><div class="step"><h5>规则给出什么</h5><p>{rule}</p></div><div class="arrow">→</div><div class="step"><h5>账户实际是什么</h5><p>{account}</p></div></div>',
+            f'<div class="ef-flow"><div class="step"><h5>OBSERVED</h5><p>{observe}</p></div><div class="arrow">→</div><div class="step"><h5>RULES SAY</h5><p>{rule}</p></div><div class="arrow">→</div><div class="step"><h5>ACCOUNT HOLDS</h5><p>{account}</p></div></div>',
+        ),
+        unsafe_allow_html=True,
+    )
