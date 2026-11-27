@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from ah_pairs.analysis import build_signals, warmup_start
-from ah_pairs.backtest import StrategyParams, current_state, run_backtest
+from ah_pairs.backtest import StrategyParams, _tradable, current_state, positions_with_reasons, run_backtest
 from ah_pairs.data import assemble_pair, read_local_close
 from ah_pairs.desk import END_SLACK_DAYS, _close, default_desk_params
 from ah_pairs.paths import CACHE_DIR, PUBLISHED_DIR
@@ -72,6 +72,17 @@ def _one_row(item: dict, fx: pd.Series, start, end, params: StrategyParams, cach
     if premium.empty or z_values.empty:
         return None
     asof = pd.Timestamp(z_values.index[-1]).date().isoformat()
+    reason = ""
+    try:
+        z_arr = result["z"].to_numpy(dtype=float)
+        beta_arr = result["beta"].to_numpy(dtype=float)
+        tradable = _tradable(result)
+        _target, reasons = positions_with_reasons(z_arr, beta_arr, params, tradable=tradable)
+        if reasons:
+            reason = reasons[-1] or ""
+    except Exception:
+        reason = ""
+    z_tail = [round(float(v), 4) for v in z_values.iloc[-60:].tolist()]
     return {
         "a_code": code,
         "h_code": h_code,
@@ -82,6 +93,8 @@ def _one_row(item: dict, fx: pd.Series, start, end, params: StrategyParams, cach
         "position": int(state.get("position") or 0),
         "signal": int(state.get("signal") or 0),
         "pending": bool(state.get("pending")),
+        "reason": reason,
+        "z_tail": z_tail,
     }
 
 
@@ -117,7 +130,7 @@ def build_panorama(
 
 def _empty() -> pd.DataFrame:
     return pd.DataFrame(
-        columns=["a_code", "h_code", "name", "asof", "premium", "z", "position", "signal", "pending"]
+        columns=["a_code", "h_code", "name", "asof", "premium", "z", "position", "signal", "pending", "reason", "z_tail"]
     )
 
 
