@@ -52,12 +52,6 @@ def render_signal(page) -> None:
             f"As of {pd.Timestamp(state['asof']).date()}, same applied parameters as the backtest. {pending_text}",
         )
     )
-    if page.engine == "v14":
-        render_v14_live_card(page)
-    show_chart(
-        core_signal_figure(page.view, page.params.z_window, page.params.entry_z, page.params.exit_z, page.params.stop_z, show_marks=page.show_marks),
-        "chart_core",
-    )
     show_chart(prices_figure(page.view), "chart_prices")
     left, right = st.columns(2)
     with left:
