@@ -73,4 +73,4 @@ python -m ah_pairs.alerts --start 2018-01-01
 python -m pytest tests -q
 ```
 
-推送到 GitHub 会跑测试。配置了 `RAILWAY_TOKEN` 时，同一条流水线会部署；没有这个密钥时，部署步骤会跳过。服务配置在 `.railway/railway.ts`，缓存卷挂在 `/app/data/cache`。容器安装了 Noto CJK，导出的 PNG 可以显示中文。
+推送到 GitHub 会跑测试。配置了 `RAILWAY_TOKEN` 时，同一条流水线调 `.github/workflows/release.yml` 部署：按确切提交 SHA 检出，`railway up` 等待构建和健康检查完成（不加 `--detach`，失败时 CI 变红），然后探活生产 URL。探活地址优先取仓库变量 `AH_APP_URL`，未配置时用 `https://ah-pairs-dashboard-production.up.railway.app`。每次部署把提交 SHA 写进镜像内的 `BUILD_SHA`，页脚显示短 SHA 供核对版本。Railway 控制台的 GitHub 自动集成和这条工作流部署只能开一条，同时开会互相覆盖。服务配置在 `.railway/railway.ts`，缓存卷挂在 `/app/data/cache`。容器安装了 Noto CJK，导出的 PNG 可以显示中文。

@@ -394,10 +394,21 @@ with tabs[2]:
 with tabs[3]:
     render_method()
 
+# 构建指纹：release.yml 在 railway up 前写入 BUILD_SHA 并随镜像进容器，
+# 页脚显示短 SHA 供人眼核对部署版本；本地运行没有这份文件时不显示。
+_build_sha = ""
+try:
+    _sha_file = Path(__file__).resolve().parent / "BUILD_SHA"
+    if _sha_file.exists():
+        _build_sha = _sha_file.read_text(encoding="utf-8").strip()[:7]
+except OSError:
+    _build_sha = ""
+_build_note = f" · build {_build_sha}" if _build_sha else ""
+
 st.markdown(
     tx(
-        f'<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.5 · 引擎 {engine} · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
-        f'<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.5 · engine {engine} · Research and study only. Not investment advice. A backtest is not a forecast.</p>',
+        f'<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.5{_build_note} · 引擎 {engine} · 仅供学术研究与学习使用，不构成任何投资建议。历史回测不代表未来表现。</p>',
+        f'<p class="site-footer">Part of <a href="https://eugenefinance.tech">EF Lab · eugenefinance.tech</a> · V1.5{_build_note} · engine {engine} · Research and study only. Not investment advice. A backtest is not a forecast.</p>',
     ),
     unsafe_allow_html=True,
 )

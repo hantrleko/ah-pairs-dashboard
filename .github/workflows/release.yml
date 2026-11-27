@@ -39,7 +39,11 @@ jobs:
             echo "RAILWAY_TOKEN is not set; skip deploy."
             exit 0
           fi
-          railway up --detach --service ah-pairs-dashboard --environment production -m "${{ inputs.reason }} ${{ inputs.sha }}"
+          # 版本指纹随镜像进容器，页脚显示，供人眼核对部署版本。
+          echo "${{ inputs.sha }}" > BUILD_SHA
+          # 不加 --detach：等待构建和流量切换完成。构建或 Railway 端健康检查
+          # 失败时非零退出，CI 变红，而不是静默留下旧版本。
+          railway up --service ah-pairs-dashboard --environment production -m "${{ inputs.reason }} ${{ inputs.sha }}"
       - name: Probe the deployment
         env:
           AH_APP_URL: ${{ vars.AH_APP_URL }}
@@ -49,10 +53,19 @@ jobs:
             echo "No deploy happened; skip probe."
             exit 0
           fi
-          if [ -z "$AH_APP_URL" ]; then
-            echo "AH_APP_URL 未配置为仓库变量，跳过探活。配置后这里会轮询 /_stcore/health。"
-            exit 0
-          fi
+          # railway up 已确认构建与健康检查通过，这里只做最后的 liveness 确认。
+          # 版本一致性靠页脚 BUILD_SHA 人眼核对，Streamlit 内容走 websocket，外部探针读不到。
+          url="${AH_APP_URL:-https://ah-pairs-dashboard-production.up.railway.app}"
+          for i in $(seq 1 36); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$url/_stcore/health" || true)
+            if [ "$code" = "200" ]; then
+              echo "探活通过：$url"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "探活超时：部署已提交但 6 分钟内健康检查未通过。"
+          exit 1
           for i in $(seq 1 36); do
             code=$(curl -s -o /dev/null -w "%{http_code}" "$AH_APP_URL/_stcore/health" || true)
             if [ "$code" = "200" ]; then
