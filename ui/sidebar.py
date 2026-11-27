@@ -71,7 +71,7 @@ def render_sidebar() -> dict:
     for column, pairs in ((left, QUICK[:2]), (right, QUICK[2:])):
         with column:
             for code, name_zh, name_en in pairs:
-                if st.button(tx(name_zh, name_en), key=f"quick_{code}", use_container_width=True):
+                if st.button(tx(name_zh, name_en), key=f"quick_{code}", width="stretch"):
                     st.session_state["pair_select"] = code
                     st.rerun()
     st.caption(
@@ -165,7 +165,7 @@ def render_sidebar() -> dict:
             a_borrow = st.number_input(tx("A 股融券年化（%）", "A borrow (% per year)"), 0.0, 30.0, 5.0, 0.5) / 100
             h_borrow = st.number_input(tx("H 股融券年化（%）", "H borrow (% per year)"), 0.0, 30.0, 2.0, 0.5) / 100
             slippage = _bps(tx("滑点（bps，单边）", "Slippage (bps, one way)"), 0.0, "slip")
-        submitted = st.form_submit_button(tx("应用参数", "Apply parameters"), use_container_width=True)
+        submitted = st.form_submit_button(tx("应用参数", "Apply parameters"), width="stretch")
 
     if not isinstance(date_range, (tuple, list)) or len(date_range) != 2:
         st.info(tx("请选择开始和结束两个日期。", "Choose both a start and an end date."))

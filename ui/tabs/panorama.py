@@ -80,7 +80,7 @@ def render_panorama(page) -> None:
             st.caption(tx("已有快照，但起始日或结束日对不上，所以不显示。", "A snapshot exists, but the start or end date does not match, so it is hidden."))
         else:
             st.caption(tx("还没有全景表。", "There is no panorama yet."))
-    if st.button(tx("用本地缓存重算", "Recompute from the local cache"), key="panorama_compute", use_container_width=True):
+    if st.button(tx("用本地缓存重算", "Recompute from the local cache"), key="panorama_compute", width="stretch"):
         with st.spinner(tx("只读本地行情…", "Reading local prices…")):
             fresh, fresh_meta = build_panorama(
                 liquid_subset(page.universe),

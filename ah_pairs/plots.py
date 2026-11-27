@@ -7,17 +7,17 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-NAVY = "#1f4e79"
+NAVY = "#0E624D"
 H_ORANGE = "#e07a2f"
-RUST = "#b4532a"
+RUST = "#8F4F0C"
 GREEN = "#1d6b45"
 RED = "#9b3a3a"
 SLATE = "#8a8175"
-GOLD = "#a6843d"
-INK = "#1c1915"
-MUTED = "#6f675e"
-GRID = "#efe6d8"
-FONT = "Segoe UI, Microsoft YaHei, sans-serif"
+GOLD = "#BB973A"
+INK = "#0C3123"
+MUTED = "#4E7466"
+GRID = "#D8D0BE"
+FONT = "IBM Plex Sans, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif"
 
 
 def L(zh: str, en: str) -> str:
@@ -39,7 +39,7 @@ def _layout(fig: go.Figure, title: str, height: int = 380) -> go.Figure:
         ),
         font=dict(family=FONT, size=12, color=INK),
         hovermode="x unified",
-        hoverlabel=dict(bgcolor="#fffcf8", bordercolor="#e7dfd2", font=dict(color=INK, family=FONT)),
+        hoverlabel=dict(bgcolor="#F9F6F1", bordercolor="#B9D5CB", font=dict(color=INK, family=FONT)),
         legend=dict(
             orientation="h",
             yanchor="bottom",

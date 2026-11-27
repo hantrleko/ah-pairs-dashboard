@@ -156,7 +156,7 @@ def _subscribe_block(page) -> None:
             value=round(float(page.params.entry_z), 1),
             step=0.1,
         )
-        submitted = st.form_submit_button(tx("保存订阅", "Save subscription"), use_container_width=True)
+        submitted = st.form_submit_button(tx("保存订阅", "Save subscription"), width="stretch")
     if submitted:
         codes = list(DESK_A_CODES) if scope == "desk" else ["*"]
         try:
@@ -173,6 +173,6 @@ def _subscribe_block(page) -> None:
         if item.get("stored") == "env":
             right.caption(tx("环境变量", "Env"))
             continue
-        if right.button(tx("删除", "Remove"), key=f"unsub_{item.get('id')}", use_container_width=True):
+        if right.button(tx("删除", "Remove"), key=f"unsub_{item.get('id')}", width="stretch"):
             remove_subscription(str(item.get("id")))
             st.rerun()

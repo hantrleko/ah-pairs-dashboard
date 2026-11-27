@@ -100,7 +100,7 @@ def _timeline(rows: list[dict]) -> None:
             tx("补回放", "Backfilled"): shown["backfilled"].map(lambda v: tx("是", "Yes") if v else ""),
         }
     )
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    st.dataframe(table, width="stretch", hide_index=True)
 
 
 def _gaps_section(state: dict) -> None:
@@ -160,7 +160,7 @@ def _recompute_compare(preset_id: str, a_code: str, h_code: str, rows: list[dict
                 f"{len(diffs)} dates differ (out of {checked}). Usually upstream revised history; sealed rows stay, differences are for comparison only.",
             )
         )
-        st.dataframe(pd.DataFrame(diffs), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(diffs), width="stretch", hide_index=True)
 
 
 
@@ -215,7 +215,7 @@ def _attribution_section(preset_id: str, a_code: str, rows: list[dict], state: d
             tx("贡献", "Contribution"): [f"{out['a_price'] * 100:.3f}%", f"{out['h_price'] * 100:.3f}%", f"{out['fx'] * 100:.3f}%", f"{out['cost'] * 100:.3f}%", f"{out['borrow'] * 100:.3f}%", f"{out['total'] * 100:.3f}%"],
         }
     )
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    st.dataframe(table, width="stretch", hide_index=True)
     note = tx("对账一致：各项加总等于该窗口的复合净收益。", "Reconciled: the parts sum to the compounded return of the window.") if out.get("reconciled") else tx("对账不一致。", "Not reconciled.")
     if not ep["closed"]:
         note += tx(" 未平仓部分是浮动盈亏，估值截止到账本最后一行。", " The open part is unrealized, valued at the last ledger row.")

@@ -477,7 +477,7 @@ def _attribution_panel(page, trades) -> None:
                 ],
             }
         )
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+        st.dataframe(rows, width="stretch", hide_index=True)
         note = tx("对账一致：合计等于该笔复合净收益。", "Reconciled: the parts sum to the compounded trade return.") if out.get("reconciled") else tx("对账不一致，合计与复合净收益有差异。", "Not reconciled: the parts differ from the compounded return.")
         if not bool(tr["closed"]):
             note += tx(" 未平仓部分是浮动盈亏。", " The open part is unrealized.")

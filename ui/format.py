@@ -46,7 +46,7 @@ def kpis(items: list[tuple[str, str, str]], columns: int = 6) -> None:
 
 
 def show_chart(fig, key: str) -> None:
-    st.plotly_chart(fig, use_container_width=True, key=key, config={"displayModeBar": True})
+    st.plotly_chart(fig, width="stretch", key=key, config={"displayModeBar": True})
 
 
 def show_table(frame, column_config=None, key=None, selectable: bool = False):

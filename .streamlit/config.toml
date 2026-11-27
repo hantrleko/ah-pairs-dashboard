@@ -1,13 +1,65 @@
-[theme]
-base = "light"
-primaryColor = "#1F4E79"
-backgroundColor = "#F4F7FB"
-secondaryBackgroundColor = "#EEF3F8"
-textColor = "#16324F"
-font = "sans serif"
-
 [server]
 headless = true
+enableStaticServing = true
 
 [browser]
 gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#0E624D"
+backgroundColor = "#F4EEE1"
+secondaryBackgroundColor = "#EFE7D6"
+textColor = "#0C3123"
+linkColor = "#0E624D"
+font = "IBM Plex Sans, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif"
+headingFont = "Libre Baskerville, Noto Serif SC, Songti SC, STSong, SimSun, serif"
+codeFont = "IBM Plex Mono, ui-monospace, Consolas, monospace"
+baseFontSize = 15
+baseRadius = "0.45rem"
+borderColor = "#B9D5CB"
+
+[[theme.fontFaces]]
+family = "IBM Plex Sans"
+url = "app/static/fonts/ibm-plex-sans-400.woff2"
+weight = 400
+style = "normal"
+
+[[theme.fontFaces]]
+family = "IBM Plex Sans"
+url = "app/static/fonts/ibm-plex-sans-500.woff2"
+weight = 500
+style = "normal"
+
+[[theme.fontFaces]]
+family = "IBM Plex Sans"
+url = "app/static/fonts/ibm-plex-sans-600.woff2"
+weight = 600
+style = "normal"
+
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url = "app/static/fonts/ibm-plex-mono-400.woff2"
+weight = 400
+style = "normal"
+
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url = "app/static/fonts/ibm-plex-mono-500.woff2"
+weight = 500
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Libre Baskerville"
+url = "app/static/fonts/libre-baskerville-400.woff2"
+weight = 400
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Libre Baskerville"
+url = "app/static/fonts/libre-baskerville-700.woff2"
+weight = 700
+style = "normal"
+
+[theme.sidebar]
+backgroundColor = "#EFE7D6"
