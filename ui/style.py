@@ -36,6 +36,16 @@ div[data-testid="stDecoration"] { display: none; }
   --ef-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
 }
 
+/* ---- 提示框统一为纸面家族样式（语义靠图标和文字） ---- */
+[data-testid="stAlert"] {
+  background: var(--ef-card);
+  border: 1px solid var(--ef-line-soft);
+  border-left: 3px solid var(--ef-gold);
+  border-radius: 6px;
+  color: var(--ef-ink);
+}
+[data-testid="stAlert"] p { color: var(--ef-ink); }
+
 /* ---- 眉题 ---- */
 .ef-kicker {
   font-family: var(--ef-mono);

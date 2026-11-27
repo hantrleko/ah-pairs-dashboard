@@ -16,4 +16,6 @@ def render() -> None:
         ),
         unsafe_allow_html=True,
     )
-    render_method()
+    col, _pad = st.columns([2.6, 1])
+    with col:
+        render_method()
